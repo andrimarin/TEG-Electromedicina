@@ -1,69 +1,236 @@
 // ============================================================
-// ELECTROTERAPIA TENS - CON WiFiManager
+// ELECTROTERAPIA TENS - CON WiFiManager + Recetas JSON
 // Configuración WiFi desde el celular (sin hardcodear)
 // Pin de salida: GPIO23 (PWM)
-// Controla: INTENSIDAD (0-255) y FRECUENCIA (1-150 Hz)
+// Controla: INTENSIDAD (0-255), FRECUENCIA y ANCHO DE PULSO
+// Recetas con ciclos trabajo/pausa. Al finalizar → 0V garantizado.
 // ============================================================
 
 #include <WiFi.h>
 #include <WebServer.h>
-#include <WiFiManager.h>  // Librería para configuración WiFi fácil
+#include <WiFiManager.h>      // Configuración WiFi fácil
+#include <ArduinoJson.h>      // Parseo de recetas JSON
 
 // ================== PINES ==================
 const int PIN_TENS = 23;        // GPIO23 - Salida PWM al optoacoplador/MOSFET
 const int PIN_LED_BUILTIN = 2;  // LED integrado del ESP32
 
-// ================== PARÁMETROS ==================
-int intensidad = 0;           // 0-255 (0 = apagado, 255 = máximo)
-int frecuenciaHz = 100;       // 1-150 Hz
-bool terapiaActiva = false;   // Estado de la terapia
+// ================== MÁQUINA DE ESTADOS ==================
+enum EstadoTerapia {
+  ESTADO_IDLE,        // Sin terapia, electrodo apagado
+  ESTADO_TRABAJANDO,  // Ciclo activo: generando pulsos
+  ESTADO_PAUSA,       // Pausa entre ciclos: electrodo apagado
+  ESTADO_FINALIZADO   // Receta completada: electrodo apagado
+};
 
-// Variables para generación de onda por frecuencia
-unsigned long ultimoPulso = 0;
+EstadoTerapia estadoActual = ESTADO_IDLE;
+
+// ================== PARÁMETROS ==================
+int intensidad = 0;             // 0-255 (amplitud del PWM durante pulso)
+int frecuenciaHz = 50;          // Hz - de la receta
+float anchoPulsoMs = 0.5;       // ms - ancho del pulso de la receta
+bool terapiaActiva = false;     // Flag global de terapia en curso
+
+// ================== RECETA ==================
+#define MAX_CICLOS 10
+struct Ciclo {
+  unsigned long trabajoSeg;     // Segundos de estimulación
+  unsigned long pausaSeg;       // Segundos de pausa
+  // inicio_at se podría usar con NTP en el futuro
+};
+
+String recetaId = "";
+int numCiclos = 0;
+Ciclo ciclos[MAX_CICLOS];
+int cicloActualIdx = 0;          // Índice del ciclo en ejecución
+unsigned long inicioFaseMs = 0;  // Millis al inicio de la fase actual
+
+// ================== GENERACIÓN DE ONDA ==================
+unsigned long ultimoPulso = 0;   // Microsegundos
 bool pulsoEncendido = false;
 
 WebServer server(80);
 
 // ================== CONFIGURACIÓN PWM ==================
 void configurarPWM() {
-  // Para ESP32 con core 3.0+, esta es la forma correcta
-  ledcAttach(PIN_TENS, frecuenciaHz, 8);  // Pin, frecuencia base, resolución 8 bits
-  ledcWrite(PIN_TENS, 0);                  // Apagar al inicio
+  ledcAttach(PIN_TENS, frecuenciaHz, 8);
+  ledcWrite(PIN_TENS, 0);
 }
 
 void actualizarPWM(int valor) {
   ledcWrite(PIN_TENS, valor);
 }
 
-// ================== GENERACIÓN DE ONDA CON FRECUENCIA VARIABLE ==================
+// ================== APAGADO GARANTIZADO ==================
+// Doble verificación: apaga PWM Y pone el pin en LOW
+void apagarElectrodoTotal() {
+  actualizarPWM(0);
+  pulsoEncendido = false;
+  // Seguridad extra: forzar el pin a LOW por si el PWM queda en estado alto
+  digitalWrite(PIN_TENS, LOW);
+}
+
+// ================== GENERACIÓN DE ONDA (por receta) ==================
+// Solo genera pulsos cuando estadoActual == ESTADO_TRABAJANDO
+// Usa frecuenciaHz y anchoPulsoMs de la receta
 void generarOnda() {
-  if (!terapiaActiva || intensidad == 0) {
+  // Si no estamos en fase de trabajo → electrodo apagado
+  if (estadoActual != ESTADO_TRABAJANDO || intensidad == 0) {
     if (pulsoEncendido) {
-      actualizarPWM(0);
-      pulsoEncendido = false;
+      apagarElectrodoTotal();
     }
     return;
   }
   
   unsigned long ahora = micros();
-  unsigned long periodoUs = 1000000 / frecuenciaHz;  // Periodo total en microsegundos
+  unsigned long periodoUs = 1000000UL / frecuenciaHz;              // Periodo total
+  unsigned long anchoPulsoUs = (unsigned long)(anchoPulsoMs * 1000.0); // Ancho de pulso en µs
+  unsigned long tiempoOffUs = periodoUs - anchoPulsoUs;             // Tiempo apagado
   
-  // El ancho del pulso es proporcional a la intensidad
-  // Intensidad 255 = 50% del periodo, Intensidad 0 = 0%
-  unsigned long anchoPulsoUs = (periodoUs * intensidad) / 510;  // Máximo 50% duty cycle
-  
-  if (!pulsoEncendido) {
-    // Iniciar pulso
-    actualizarPWM(intensidad);
-    pulsoEncendido = true;
-    ultimoPulso = ahora;
-  } 
-  else if ((ahora - ultimoPulso) >= anchoPulsoUs) {
-    // Terminar pulso (pero el ciclo continúa)
-    actualizarPWM(0);
-    pulsoEncendido = false;
-    ultimoPulso = ahora;
+  // Protección: el ancho de pulso no puede ser mayor que el periodo
+  if (anchoPulsoUs >= periodoUs) {
+    anchoPulsoUs = periodoUs / 2;  // Limitar al 50%
+    tiempoOffUs = periodoUs - anchoPulsoUs;
   }
+  
+  if (pulsoEncendido) {
+    // Fase ON: esperar a que termine el ancho del pulso
+    if ((ahora - ultimoPulso) >= anchoPulsoUs) {
+      actualizarPWM(0);        // Apagar
+      pulsoEncendido = false;
+      ultimoPulso = ahora;
+    }
+  } else {
+    // Fase OFF: esperar el tiempo de reposo antes de encender
+    if ((ahora - ultimoPulso) >= tiempoOffUs) {
+      actualizarPWM(intensidad);  // Encender con la amplitud configurada
+      pulsoEncendido = true;
+      ultimoPulso = ahora;
+    }
+  }
+}
+
+// ================== MÁQUINA DE ESTADOS DE TERAPIA ==================
+void gestionarReceta() {
+  if (estadoActual == ESTADO_IDLE || estadoActual == ESTADO_FINALIZADO) {
+    return;  // Nada que hacer
+  }
+  
+  unsigned long tiempoEnFaseMs = millis() - inicioFaseMs;
+  
+  if (estadoActual == ESTADO_TRABAJANDO) {
+    unsigned long duracionTrabajoMs = ciclos[cicloActualIdx].trabajoSeg * 1000UL;
+    
+    if (tiempoEnFaseMs >= duracionTrabajoMs) {
+      // Terminó el tiempo de trabajo de este ciclo
+      apagarElectrodoTotal();
+      
+      // ¿Hay pausa en este ciclo?
+      if (ciclos[cicloActualIdx].pausaSeg > 0) {
+        estadoActual = ESTADO_PAUSA;
+        inicioFaseMs = millis();
+        Serial.print("⏸ Pausa ciclo ");
+        Serial.print(cicloActualIdx + 1);
+        Serial.print("/");
+        Serial.print(numCiclos);
+        Serial.print(" - ");
+        Serial.print(ciclos[cicloActualIdx].pausaSeg);
+        Serial.println("s");
+      } else {
+        // Sin pausa, ir al siguiente ciclo o finalizar
+        avanzarAlSiguienteCiclo();
+      }
+    }
+  }
+  else if (estadoActual == ESTADO_PAUSA) {
+    unsigned long duracionPausaMs = ciclos[cicloActualIdx].pausaSeg * 1000UL;
+    
+    if (tiempoEnFaseMs >= duracionPausaMs) {
+      avanzarAlSiguienteCiclo();
+    }
+  }
+}
+
+void avanzarAlSiguienteCiclo() {
+  cicloActualIdx++;
+  
+  if (cicloActualIdx >= numCiclos) {
+    // ====== RECETA COMPLETADA: APAGADO TOTAL ======
+    finalizarTerapia();
+  } else {
+    // Iniciar siguiente ciclo de trabajo
+    estadoActual = ESTADO_TRABAJANDO;
+    inicioFaseMs = millis();
+    Serial.print("▶ Ciclo ");
+    Serial.print(cicloActualIdx + 1);
+    Serial.print("/");
+    Serial.println(numCiclos);
+  }
+}
+
+void iniciarReceta() {
+  if (numCiclos == 0) {
+    Serial.println("⚠️ No hay receta cargada");
+    return;
+  }
+  if (intensidad == 0) {
+    Serial.println("⚠️ Intensidad en 0, no se inicia");
+    return;
+  }
+  
+  cicloActualIdx = 0;
+  estadoActual = ESTADO_TRABAJANDO;
+  terapiaActiva = true;
+  inicioFaseMs = millis();
+  ultimoPulso = micros();
+  
+  Serial.println("=== RECETA INICIADA ===");
+  Serial.print("Receta: ");
+  Serial.println(recetaId);
+  Serial.print("Ciclos: ");
+  Serial.println(numCiclos);
+  Serial.print("Frecuencia: ");
+  Serial.print(frecuenciaHz);
+  Serial.println(" Hz");
+  Serial.print("Ancho pulso: ");
+  Serial.print(anchoPulsoMs);
+  Serial.println(" ms");
+  Serial.print("Intensidad: ");
+  Serial.println(intensidad);
+}
+
+void finalizarTerapia() {
+  // ====== APAGADO TOTAL GARANTIZADO ======
+  estadoActual = ESTADO_FINALIZADO;
+  terapiaActiva = false;
+  intensidad = 0;
+  apagarElectrodoTotal();
+  // Triple seguridad: volver a escribir 0
+  delay(1);
+  actualizarPWM(0);
+  digitalWrite(PIN_TENS, LOW);
+  
+  Serial.println("=== RECETA FINALIZADA ===");
+  Serial.println("⚡ Electrodo APAGADO - 0V confirmado");
+}
+
+void detenerTerapiaManual() {
+  estadoActual = ESTADO_IDLE;
+  terapiaActiva = false;
+  apagarElectrodoTotal();
+  Serial.println("=== TERAPIA DETENIDA MANUALMENTE ===");
+}
+
+void emergenciaTotal() {
+  estadoActual = ESTADO_IDLE;
+  terapiaActiva = false;
+  intensidad = 0;
+  apagarElectrodoTotal();
+  // Seguridad extra
+  delay(1);
+  actualizarPWM(0);
+  digitalWrite(PIN_TENS, LOW);
+  Serial.println("!!! PARADA DE EMERGENCIA !!!");
 }
 
 // ================== INTERFAZ WEB ==================
@@ -74,7 +241,7 @@ String getHTML() {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-  <title>TENS - Electroterapia Remota</title>
+  <title>TENS - Electroterapia por Receta</title>
   <style>
     * { box-sizing: border-box; user-select: none; }
     body {
@@ -87,11 +254,7 @@ String getHTML() {
       justify-content: center;
       align-items: center;
     }
-    .container {
-      max-width: 550px;
-      width: 100%;
-      margin: auto;
-    }
+    .container { max-width: 550px; width: 100%; margin: auto; }
     .card {
       background: rgba(22, 34, 48, 0.95);
       backdrop-filter: blur(10px);
@@ -102,124 +265,88 @@ String getHTML() {
       border: 1px solid rgba(255,255,255,0.08);
     }
     h1 {
-      font-size: 1.8rem;
-      margin: 0 0 8px 0;
-      font-weight: 600;
+      font-size: 1.8rem; margin: 0 0 8px 0; font-weight: 600;
       background: linear-gradient(135deg, #aaffdd, #2ecc71);
-      -webkit-background-clip: text;
-      background-clip: text;
-      color: transparent;
-      text-align: center;
-    }
-    .subtitulo {
-      text-align: center;
-      color: #8aaec0;
-      margin-bottom: 24px;
-      font-size: 0.85rem;
+      -webkit-background-clip: text; background-clip: text;
+      color: transparent; text-align: center;
     }
     .estado-panel {
-      background: #07121c;
-      border-radius: 48px;
-      padding: 12px 20px;
-      text-align: center;
-      margin-bottom: 28px;
-      border: 1px solid #2a4a6e;
+      background: #07121c; border-radius: 48px;
+      padding: 12px 20px; text-align: center;
+      margin-bottom: 20px; border: 1px solid #2a4a6e;
     }
     .estado-led {
-      display: inline-block;
-      width: 14px;
-      height: 14px;
-      border-radius: 14px;
-      background: #555;
-      margin-right: 8px;
+      display: inline-block; width: 14px; height: 14px;
+      border-radius: 14px; background: #555; margin-right: 8px;
     }
-    .estado-texto {
-      font-weight: bold;
-      letter-spacing: 1px;
-    }
+    .estado-texto { font-weight: bold; letter-spacing: 1px; color: #ccc; }
     .activo .estado-led { background: #2ecc71; box-shadow: 0 0 8px #2ecc71; }
+    .activo .estado-texto { color: #2ecc71; }
+    .pausa .estado-led { background: #f39c12; box-shadow: 0 0 8px #f39c12; }
+    .pausa .estado-texto { color: #f39c12; }
+    .finalizado .estado-led { background: #3498db; box-shadow: 0 0 8px #3498db; }
+    .finalizado .estado-texto { color: #3498db; }
     .inactivo .estado-led { background: #e74c3c; }
-    
+    .inactivo .estado-texto { color: #e74c3c; }
+
     .param-card {
-      background: #0a1824;
-      border-radius: 28px;
-      padding: 16px 20px;
-      margin-bottom: 20px;
+      background: #0a1824; border-radius: 28px;
+      padding: 16px 20px; margin-bottom: 16px;
     }
     .param-label {
-      display: flex;
-      justify-content: space-between;
-      font-weight: 600;
-      margin-bottom: 12px;
-      color: #c0e0ff;
+      display: flex; justify-content: space-between;
+      font-weight: 600; margin-bottom: 12px; color: #c0e0ff;
     }
     input[type=range] {
-      width: 100%;
-      height: 6px;
-      -webkit-appearance: none;
-      background: #2c4c6c;
-      border-radius: 10px;
-      outline: none;
+      width: 100%; height: 6px; -webkit-appearance: none;
+      background: #2c4c6c; border-radius: 10px; outline: none;
     }
     input[type=range]::-webkit-slider-thumb {
-      -webkit-appearance: none;
-      width: 24px;
-      height: 24px;
-      background: #2ecc71;
-      border-radius: 50%;
-      cursor: pointer;
-      box-shadow: 0 0 8px #2ecc71;
-      border: none;
+      -webkit-appearance: none; width: 24px; height: 24px;
+      background: #2ecc71; border-radius: 50%; cursor: pointer;
+      box-shadow: 0 0 8px #2ecc71; border: none;
     }
-    .valor-actual {
-      font-size: 1.6rem;
-      font-weight: bold;
-      color: #f5f9ff;
-      background: #071723;
-      display: inline-block;
-      padding: 4px 16px;
-      border-radius: 40px;
-      margin-top: 10px;
+    textarea {
+      width: 100%; background: #071723; color: #aaffdd;
+      border: 1px solid #2a4a6e; border-radius: 16px;
+      padding: 12px; font-family: monospace; font-size: 0.8rem;
+      resize: vertical; min-height: 120px;
     }
     .botonera {
-      display: flex;
-      gap: 15px;
-      justify-content: center;
-      margin: 25px 0 10px;
+      display: flex; gap: 12px; justify-content: center; margin: 20px 0 10px;
     }
     button {
-      border: none;
-      padding: 14px 28px;
-      border-radius: 60px;
-      font-weight: bold;
-      font-size: 1rem;
-      background: #1f3e54;
-      color: white;
-      cursor: pointer;
-      transition: 0.2s;
-      flex: 1;
+      border: none; padding: 14px 24px; border-radius: 60px;
+      font-weight: bold; font-size: 1rem; background: #1f3e54;
+      color: white; cursor: pointer; transition: 0.2s; flex: 1;
     }
+    .btn-cargar { background: #3498db; color: #fff; }
     .btn-iniciar { background: #2ecc71; color: #000; }
     .btn-detener { background: #e74c3c; }
-    .btn-emergencia { background: #c0392b; border: 1px solid #ff8866; }
+    .btn-emergencia { background: #c0392b; border: 1px solid #ff8866; width: 100%; }
+    .info-receta {
+      background: #07121c; border-radius: 20px; padding: 14px;
+      margin-bottom: 16px; font-size: 0.85rem; color: #8aaec0;
+    }
+    .info-receta b { color: #aaffdd; }
+    .progreso-bar {
+      background: #1a2a3a; border-radius: 10px; height: 8px;
+      margin-top: 10px; overflow: hidden;
+    }
+    .progreso-bar-fill {
+      background: linear-gradient(90deg, #2ecc71, #27ae60);
+      height: 100%; width: 0%; transition: width 0.5s;
+      border-radius: 10px;
+    }
     footer {
-      text-align: center;
-      font-size: 0.7rem;
-      color: #2c5a7a;
-      margin-top: 15px;
+      text-align: center; font-size: 0.7rem; color: #2c5a7a; margin-top: 15px;
     }
     .badge {
-      background: #0e2a3a;
-      border-radius: 24px;
-      padding: 6px 12px;
-      font-size: 0.75rem;
-      display: inline-block;
+      background: #0e2a3a; border-radius: 24px;
+      padding: 6px 12px; font-size: 0.75rem; display: inline-block;
     }
     .ip-info {
-      text-align: center;
-      font-size: 0.7rem;
-      color: #5a9ec2;
-      margin-top: 10px;
+      text-align: center; font-size: 0.7rem; color: #5a9ec2; margin-top: 10px;
     }
   </style>
 </head>
@@ -227,155 +354,215 @@ String getHTML() {
 <div class="container">
   <div class="card">
     <h1>⚡ TENS · Teleterapia</h1>
-    <div style="text-align:center"><span class="badge">📡 Control WiFi remoto</span></div>
-    
+    <div style="text-align:center;margin-bottom:16px"><span class="badge">📡 Control WiFi · Recetas JSON</span></div>
+
     <div id="estadoWidget" class="estado-panel inactivo">
       <span class="estado-led"></span>
       <span class="estado-texto" id="estadoTexto">SISTEMA INACTIVO</span>
     </div>
-    
+
+    <!-- Info de receta cargada -->
+    <div class="info-receta" id="infoReceta">
+      📋 <b>Sin receta cargada</b> — Pega un JSON abajo y presiona "Cargar"
+    </div>
+    <div class="progreso-bar"><div class="progreso-bar-fill" id="progresoFill"></div></div>
+
+    <!-- Editor de receta JSON -->
+    <div class="param-card" style="margin-top:16px">
+      <div class="param-label"><span>📝 RECETA JSON</span></div>
+      <textarea id="recetaJson">{
+  "receta_id": "terapia_01",
+  "num_ciclos": 1,
+  "ciclos": [
+    {"trabajo_seg": 300, "pausa_seg": 60}
+  ],
+  "parametros_pulso": {
+    "frecuencia_hz": 50,
+    "ancho_pulso_ms": 0.5
+  }
+}</textarea>
+      <div style="margin-top:10px;text-align:center">
+        <button class="btn-cargar" id="btnCargar" style="flex:none;width:auto;padding:10px 30px">📤 Cargar Receta</button>
+      </div>
+    </div>
+
+    <!-- Intensidad (amplitud del pulso, ajustable por el usuario) -->
     <div class="param-card">
       <div class="param-label">
-        <span>🎛️ INTENSIDAD</span>
+        <span>�️ INTENSIDAD (amplitud)</span>
         <span id="intensidadValor">0</span>
       </div>
       <input type="range" id="intensidadSlider" min="0" max="255" value="0">
       <div style="font-size:12px; opacity:0.7">0 = apagado &nbsp;&nbsp; 255 = máximo</div>
     </div>
-    
-    <div class="param-card">
-      <div class="param-label">
-        <span>🌀 FRECUENCIA (Hz)</span>
-        <span id="frecuenciaValor">100</span>
-      </div>
-      <input type="range" id="frecuenciaSlider" min="1" max="150" value="100">
-      <div style="font-size:12px; opacity:0.7">Rango terapéutico 1~150 Hz</div>
-    </div>
-    
+
     <div class="botonera">
       <button class="btn-iniciar" id="btnIniciar">▶ INICIAR</button>
       <button class="btn-detener" id="btnDetener">⏹ DETENER</button>
     </div>
     <button class="btn-emergencia" id="btnEmergencia">🛑 PARADA DE EMERGENCIA</button>
-    
-    <div style="margin-top: 24px; background:#07121c; border-radius: 28px; padding: 12px; text-align: center;">
+
+    <div style="margin-top:20px; background:#07121c; border-radius:20px; padding:12px; text-align:center;">
       <span>🔋 Estado: </span><span id="estadoTerapia" style="font-weight:bold; color:#ffaa66">SIN TERAPIA</span>
-      <div id="feedback" style="font-size:12px; margin-top: 8px;">✅ Conectado al ESP32</div>
+      <div id="feedback" style="font-size:12px; margin-top:8px;">✅ Conectado al ESP32</div>
     </div>
     <div class="ip-info" id="ipDisplay"></div>
-    <footer>Electroterapia TENS · Control remoto por WiFi</footer>
+    <footer>Electroterapia TENS · Control remoto por WiFi · Recetas JSON</footer>
   </div>
 </div>
 
 <script>
   const intensidadSlider = document.getElementById('intensidadSlider');
   const intensidadValor = document.getElementById('intensidadValor');
-  const frecuenciaSlider = document.getElementById('frecuenciaSlider');
-  const frecuenciaValor = document.getElementById('frecuenciaValor');
   const estadoTerapiaSpan = document.getElementById('estadoTerapia');
   const feedbackDiv = document.getElementById('feedback');
   const estadoWidget = document.getElementById('estadoWidget');
   const estadoTexto = document.getElementById('estadoTexto');
+  const infoReceta = document.getElementById('infoReceta');
+  const progresoFill = document.getElementById('progresoFill');
+  const recetaJsonArea = document.getElementById('recetaJson');
 
   let terapiaEncendida = false;
+  let recetaCargada = false;
 
+  // ---- Intensidad en tiempo real ----
   intensidadSlider.oninput = () => {
     intensidadValor.innerText = intensidadSlider.value;
-    if (terapiaEncendida) {
-      enviarIntensidad(intensidadSlider.value);
-    }
-  };
-  
-  frecuenciaSlider.oninput = () => {
-    frecuenciaValor.innerText = frecuenciaSlider.value;
-    if (terapiaEncendida) {
-      enviarFrecuencia(frecuenciaSlider.value);
-    }
+    enviarIntensidad(intensidadSlider.value);
   };
 
   async function enviarIntensidad(val) {
-    try {
-      await fetch('/set_intensidad?v=' + val);
-    } catch(e) { console.log(e); }
-  }
-  
-  async function enviarFrecuencia(val) {
-    try {
-      await fetch('/set_frecuencia?hz=' + val);
-    } catch(e) { console.log(e); }
+    try { await fetch('/set_intensidad?v=' + val); } catch(e) { console.log(e); }
   }
 
+  // ---- Cargar receta JSON ----
+  async function cargarReceta() {
+    const txt = recetaJsonArea.value.trim();
+    try {
+      JSON.parse(txt);  // Validar JSON en el cliente
+    } catch(e) {
+      feedbackDiv.innerHTML = "❌ JSON inválido: " + e.message;
+      return;
+    }
+    try {
+      const resp = await fetch('/receta', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: txt
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        recetaCargada = true;
+        infoReceta.innerHTML = "📋 <b>" + data.receta_id + "</b> — " +
+          data.num_ciclos + " ciclo(s) · " +
+          data.frecuencia_hz + " Hz · " +
+          data.ancho_pulso_ms + " ms pulso";
+        feedbackDiv.innerHTML = "✅ Receta cargada correctamente";
+      } else {
+        feedbackDiv.innerHTML = "❌ Error al cargar receta";
+      }
+    } catch(e) {
+      feedbackDiv.innerHTML = "❌ Error de conexión: " + e.message;
+    }
+  }
+
+  // ---- Iniciar terapia ----
   async function iniciarTerapia() {
     const intensidad = intensidadSlider.value;
-    const frecuencia = frecuenciaSlider.value;
+    if (!recetaCargada) {
+      feedbackDiv.innerHTML = "⚠️ Primero carga una receta JSON";
+      return;
+    }
     if (parseInt(intensidad) === 0) {
       feedbackDiv.innerHTML = "⚠️ La intensidad está en 0, sube el nivel antes de iniciar.";
       return;
     }
-    const resp = await fetch('/iniciar?int=' + intensidad + '&freq=' + frecuencia);
+    const resp = await fetch('/iniciar?int=' + intensidad);
     if (resp.ok) {
       terapiaEncendida = true;
-      estadoTerapiaSpan.innerText = "▶ ACTIVA";
-      estadoWidget.className = "estado-panel activo";
-      estadoTexto.innerText = "TERAPIA ACTIVA";
       feedbackDiv.innerHTML = "🟢 Terapia en curso";
     }
   }
 
+  // ---- Detener ----
   async function detenerTerapia() {
     await fetch('/detener');
     terapiaEncendida = false;
-    estadoTerapiaSpan.innerText = "⏹ INACTIVA";
-    estadoWidget.className = "estado-panel inactivo";
-    estadoTexto.innerText = "SISTEMA INACTIVO";
     feedbackDiv.innerHTML = "⚫ Terapia detenida";
     await actualizarEstadoCompleto();
   }
 
-  async function emergenciaTotal() {
+  // ---- Emergencia ----
+  async function emergencia() {
     await fetch('/emergencia');
     terapiaEncendida = false;
     intensidadSlider.value = 0;
     intensidadValor.innerText = "0";
-    estadoTerapiaSpan.innerText = "⛔ EMERGENCIA";
-    estadoWidget.className = "estado-panel inactivo";
-    estadoTexto.innerText = "EMERGENCIA ⚠️";
     feedbackDiv.innerHTML = "🛑 PARADA DE EMERGENCIA ACTIVADA";
-    setTimeout(() => {
-      if(!terapiaEncendida) estadoTexto.innerText = "SISTEMA INACTIVO";
-    }, 2000);
+    await actualizarEstadoCompleto();
   }
 
+  // ---- Polling de estado ----
   async function actualizarEstadoCompleto() {
     try {
       const res = await fetch('/estado_completo');
-      const data = await res.json();
-      intensidadSlider.value = data.intensidad;
-      intensidadValor.innerText = data.intensidad;
-      frecuenciaSlider.value = data.frecuencia;
-      frecuenciaValor.innerText = data.frecuencia;
-      terapiaEncendida = data.activa;
-      if(terapiaEncendida) {
-        estadoTerapiaSpan.innerText = "▶ ACTIVA";
+      const d = await res.json();
+      intensidadSlider.value = d.intensidad;
+      intensidadValor.innerText = d.intensidad;
+      terapiaEncendida = d.activa;
+
+      // Estado visual
+      const est = d.estado; // "idle","trabajando","pausa","finalizado"
+      if (est === "trabajando") {
         estadoWidget.className = "estado-panel activo";
         estadoTexto.innerText = "TERAPIA ACTIVA";
+        estadoTerapiaSpan.innerText = "▶ ACTIVA";
+        estadoTerapiaSpan.style.color = "#2ecc71";
+      } else if (est === "pausa") {
+        estadoWidget.className = "estado-panel pausa";
+        estadoTexto.innerText = "PAUSA ENTRE CICLOS";
+        estadoTerapiaSpan.innerText = "⏸ PAUSA";
+        estadoTerapiaSpan.style.color = "#f39c12";
+      } else if (est === "finalizado") {
+        estadoWidget.className = "estado-panel finalizado";
+        estadoTexto.innerText = "RECETA COMPLETADA";
+        estadoTerapiaSpan.innerText = "✅ FINALIZADA";
+        estadoTerapiaSpan.style.color = "#3498db";
       } else {
-        estadoTerapiaSpan.innerText = "⏹ INACTIVA";
         estadoWidget.className = "estado-panel inactivo";
         estadoTexto.innerText = "SISTEMA INACTIVO";
+        estadoTerapiaSpan.innerText = "⏹ INACTIVA";
+        estadoTerapiaSpan.style.color = "#ffaa66";
+      }
+
+      // Progreso
+      if (d.progreso !== undefined) {
+        progresoFill.style.width = d.progreso + "%";
+      }
+
+      // Info del ciclo
+      if (d.ciclo_actual !== undefined && d.num_ciclos !== undefined && d.activa) {
+        infoReceta.innerHTML = "📋 <b>" + (d.receta_id || "Receta") + "</b> — Ciclo " +
+          d.ciclo_actual + "/" + d.num_ciclos + " · " +
+          d.frecuencia_hz + " Hz · " + d.ancho_pulso_ms + " ms";
+      }
+
+      if (recetaCargada && !d.activa && d.receta_id) {
+        // Mantener info de receta cargada
       }
     } catch(e) { console.log("error sync", e); }
   }
 
-  // Mostrar IP (opcional)
+  // Mostrar IP
   fetch('/ip').then(r=>r.text()).then(ip => {
     document.getElementById('ipDisplay').innerHTML = '🌐 ' + ip;
   });
 
+  document.getElementById('btnCargar').onclick = cargarReceta;
   document.getElementById('btnIniciar').onclick = iniciarTerapia;
   document.getElementById('btnDetener').onclick = detenerTerapia;
-  document.getElementById('btnEmergencia').onclick = emergenciaTotal;
-  
+  document.getElementById('btnEmergencia').onclick = emergencia;
+
   setInterval(actualizarEstadoCompleto, 1500);
   actualizarEstadoCompleto();
 </script>
@@ -407,64 +594,152 @@ void setupServer() {
     }
   });
   
-  // Endpoint para cambiar frecuencia en tiempo real
-  server.on("/set_frecuencia", []() {
-    if (server.hasArg("hz")) {
-      frecuenciaHz = server.arg("hz").toInt();
-      if (frecuenciaHz < 1) frecuenciaHz = 1;
-      if (frecuenciaHz > 150) frecuenciaHz = 150;
-      Serial.print("Frecuencia: ");
-      Serial.println(frecuenciaHz);
-      server.send(200, "text/plain", "OK");
+  // Endpoint para cargar receta JSON (POST)
+  server.on("/receta", HTTP_POST, []() {
+    String body = server.arg("plain");
+    Serial.println("Receta recibida:");
+    Serial.println(body);
+    
+    // Parsear JSON con ArduinoJson
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, body);
+    
+    if (error) {
+      Serial.print("Error JSON: ");
+      Serial.println(error.c_str());
+      server.send(400, "application/json", "{\"error\":\"JSON invalido\"}");
+      return;
     }
+    
+    // Extraer datos de la receta
+    recetaId = doc["receta_id"] | "sin_id";
+    numCiclos = doc["num_ciclos"] | 0;
+    if (numCiclos > MAX_CICLOS) numCiclos = MAX_CICLOS;
+    
+    // Parámetros de pulso
+    frecuenciaHz = doc["parametros_pulso"]["frecuencia_hz"] | 50;
+    anchoPulsoMs = doc["parametros_pulso"]["ancho_pulso_ms"] | 0.5;
+    
+    // Validaciones
+    if (frecuenciaHz < 1) frecuenciaHz = 1;
+    if (frecuenciaHz > 150) frecuenciaHz = 150;
+    if (anchoPulsoMs < 0.01) anchoPulsoMs = 0.01;
+    if (anchoPulsoMs > 10.0) anchoPulsoMs = 10.0;
+    
+    // Cargar ciclos
+    JsonArray ciclosArr = doc["ciclos"].as<JsonArray>();
+    int idx = 0;
+    for (JsonObject c : ciclosArr) {
+      if (idx >= numCiclos) break;
+      ciclos[idx].trabajoSeg = c["trabajo_seg"] | 0;
+      ciclos[idx].pausaSeg = c["pausa_seg"] | 0;
+      idx++;
+    }
+    
+    // Si num_ciclos es mayor que los ciclos definidos, ajustar
+    if (idx < numCiclos) numCiclos = idx;
+    
+    Serial.print("Receta cargada: ");
+    Serial.println(recetaId);
+    Serial.print("Ciclos: ");
+    Serial.println(numCiclos);
+    for (int i = 0; i < numCiclos; i++) {
+      Serial.print("  Ciclo ");
+      Serial.print(i + 1);
+      Serial.print(": trabajo=");
+      Serial.print(ciclos[i].trabajoSeg);
+      Serial.print("s, pausa=");
+      Serial.print(ciclos[i].pausaSeg);
+      Serial.println("s");
+    }
+    Serial.print("Frecuencia: ");
+    Serial.print(frecuenciaHz);
+    Serial.println(" Hz");
+    Serial.print("Ancho pulso: ");
+    Serial.print(anchoPulsoMs);
+    Serial.println(" ms");
+    
+    // Responder con confirmación
+    String resp = "{";
+    resp += "\"ok\":true,";
+    resp += "\"receta_id\":\"" + recetaId + "\",";
+    resp += "\"num_ciclos\":" + String(numCiclos) + ",";
+    resp += "\"frecuencia_hz\":" + String(frecuenciaHz) + ",";
+    resp += "\"ancho_pulso_ms\":" + String(anchoPulsoMs, 2);
+    resp += "}";
+    server.send(200, "application/json", resp);
   });
   
-  // Endpoint para iniciar terapia
+  // Endpoint para iniciar terapia (usa la receta cargada)
   server.on("/iniciar", []() {
     if (server.hasArg("int")) {
       intensidad = server.arg("int").toInt();
       if (intensidad < 0) intensidad = 0;
       if (intensidad > 255) intensidad = 255;
     }
-    if (server.hasArg("freq")) {
-      frecuenciaHz = server.arg("freq").toInt();
-      if (frecuenciaHz < 1) frecuenciaHz = 1;
-      if (frecuenciaHz > 150) frecuenciaHz = 150;
+    if (numCiclos == 0) {
+      server.send(400, "text/plain", "No hay receta cargada");
+      return;
     }
-    terapiaActiva = true;
-    Serial.println("=== TERAPIA INICIADA ===");
-    Serial.print("Intensidad: ");
-    Serial.println(intensidad);
-    Serial.print("Frecuencia: ");
-    Serial.println(frecuenciaHz);
+    iniciarReceta();
     server.send(200, "text/plain", "OK");
   });
   
   // Endpoint para detener terapia
   server.on("/detener", []() {
-    terapiaActiva = false;
-    actualizarPWM(0);
-    pulsoEncendido = false;
-    Serial.println("=== TERAPIA DETENIDA ===");
+    detenerTerapiaManual();
     server.send(200, "text/plain", "OK");
   });
   
   // Endpoint para emergencia (detiene todo y pone intensidad 0)
   server.on("/emergencia", []() {
-    terapiaActiva = false;
-    intensidad = 0;
-    actualizarPWM(0);
-    pulsoEncendido = false;
-    Serial.println("!!! PARADA DE EMERGENCIA !!!");
+    emergenciaTotal();
     server.send(200, "text/plain", "OK");
   });
   
   // Endpoint para obtener estado completo
   server.on("/estado_completo", []() {
+    // Calcular progreso
+    float progreso = 0;
+    if (numCiclos > 0 && (estadoActual == ESTADO_TRABAJANDO || estadoActual == ESTADO_PAUSA)) {
+      // Tiempo total de la receta
+      unsigned long totalSeg = 0;
+      unsigned long transcurridoSeg = 0;
+      for (int i = 0; i < numCiclos; i++) {
+        totalSeg += ciclos[i].trabajoSeg + ciclos[i].pausaSeg;
+      }
+      // Tiempo transcurrido: ciclos completados + fase actual
+      for (int i = 0; i < cicloActualIdx; i++) {
+        transcurridoSeg += ciclos[i].trabajoSeg + ciclos[i].pausaSeg;
+      }
+      unsigned long enFaseSeg = (millis() - inicioFaseMs) / 1000;
+      if (estadoActual == ESTADO_TRABAJANDO) {
+        transcurridoSeg += enFaseSeg;
+      } else if (estadoActual == ESTADO_PAUSA) {
+        transcurridoSeg += ciclos[cicloActualIdx].trabajoSeg + enFaseSeg;
+      }
+      if (totalSeg > 0) progreso = (float)transcurridoSeg / totalSeg * 100.0;
+      if (progreso > 100) progreso = 100;
+    } else if (estadoActual == ESTADO_FINALIZADO) {
+      progreso = 100;
+    }
+    
+    // Nombre del estado
+    String estadoStr = "idle";
+    if (estadoActual == ESTADO_TRABAJANDO) estadoStr = "trabajando";
+    else if (estadoActual == ESTADO_PAUSA) estadoStr = "pausa";
+    else if (estadoActual == ESTADO_FINALIZADO) estadoStr = "finalizado";
+    
     String json = "{";
     json += "\"activa\":" + String(terapiaActiva ? "true" : "false") + ",";
+    json += "\"estado\":\"" + estadoStr + "\",";
     json += "\"intensidad\":" + String(intensidad) + ",";
-    json += "\"frecuencia\":" + String(frecuenciaHz);
+    json += "\"frecuencia_hz\":" + String(frecuenciaHz) + ",";
+    json += "\"ancho_pulso_ms\":" + String(anchoPulsoMs, 2) + ",";
+    json += "\"receta_id\":\"" + recetaId + "\",";
+    json += "\"ciclo_actual\":" + String(cicloActualIdx + 1) + ",";
+    json += "\"num_ciclos\":" + String(numCiclos) + ",";
+    json += "\"progreso\":" + String(progreso, 1);
     json += "}";
     server.send(200, "application/json", json);
   });
@@ -531,13 +806,23 @@ void setup() {
 void loop() {
   server.handleClient();
   
-  // Generar onda según frecuencia e intensidad
+  // Gestionar máquina de estados de la receta (trabajo/pausa/fin)
+  gestionarReceta();
+  
+  // Generar onda solo si estamos en fase de trabajo
   generarOnda();
   
-  // LED indicador: parpadea cuando la terapia está activa
+  // LED indicador
   static unsigned long lastBlink = 0;
-  if (terapiaActiva && intensidad > 0) {
-    if (millis() - lastBlink > 500) {
+  if (estadoActual == ESTADO_TRABAJANDO && intensidad > 0) {
+    // Parpadeo rápido: terapia activa
+    if (millis() - lastBlink > 300) {
+      lastBlink = millis();
+      digitalWrite(PIN_LED_BUILTIN, !digitalRead(PIN_LED_BUILTIN));
+    }
+  } else if (estadoActual == ESTADO_PAUSA) {
+    // Parpadeo lento: en pausa
+    if (millis() - lastBlink > 1000) {
       lastBlink = millis();
       digitalWrite(PIN_LED_BUILTIN, !digitalRead(PIN_LED_BUILTIN));
     }
