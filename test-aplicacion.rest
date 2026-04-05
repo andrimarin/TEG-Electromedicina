@@ -1,0 +1,59 @@
+@host = http://192.168.1.186
+## Formato de Receta JSON
+### La receta JSON debe seguir el siguiente formato para ser válida:
+@name = receta_01
+POST http://192.168.1.186:5000/receta
+Content-Type: application/json
+
+{
+  "receta_id": "terapia_01",
+  "num_ciclos": 1,
+  "ciclos": [
+    {"trabajo_seg": 300, "pausa_seg": 60}
+  ],
+  "parametros_pulso": {
+    "frecuencia_hz": 50,
+    "ancho_pulso_ms": 0.5
+  }
+}
+
+### Ejemplo de receta JSON válida:
+@name = receta_02
+POST @host/receta
+Content-Type: application/json
+
+{
+  "receta_id": "terapia_02",
+  "num_ciclos": 2,
+  "ciclos": [
+    {"trabajo_seg": 300, "pausa_seg": 60},
+    {"trabajo_seg": 300, "pausa_seg": 60}
+  ],
+  "parametros_pulso": {
+    "frecuencia_hz": 50,
+    "ancho_pulso_ms": 0.5
+  }
+}
+
+
+### iniciar terapia con intensidad N
+@name = iniciar_terapia
+GET @host/iniciar?int=5
+
+### detener terapia
+@name = detener_terapia
+GET @host/detener
+
+### parada de emergencia
+@name = emergencia
+GET @host/emergencia
+
+
+### ajustar intensidad en tiempo real
+@name = ajustar_intensidad
+GET @host/set_intensidad?v=7    
+
+### estado completo
+@name = estado_completo
+GET @host/estado_completo   
+

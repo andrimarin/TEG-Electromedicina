@@ -26,10 +26,25 @@ enum EstadoTerapia {
 EstadoTerapia estadoActual = ESTADO_IDLE;
 
 // ================== PARÁMETROS ==================
-int intensidad = 0;             // 0-255 (amplitud del PWM durante pulso)
+int intensidad = 0;             // mA (0 - MAX_ALLOWED_MA)
 int frecuenciaHz = 50;          // Hz - de la receta
 float anchoPulsoMs = 0.5;       // ms - ancho del pulso de la receta
 bool terapiaActiva = false;     // Flag global de terapia en curso
+
+// Seguridad: límite máximo de corriente en miliamperios
+const int MAX_ALLOWED_MA = 100; // límite seguro (100 mA)
+const int PWM_MAX = 255;        // máxima resolución PWM (8 bits)
+int pwmValor = 0;               // valor PWM calculado a partir de intensidad (0..255)
+
+// Helper: actualizar intensidad en mA (clamp y map a PWM)
+void actualizarIntensidadMa(int ma) {
+  if (ma < 0) ma = 0;
+  if (ma > MAX_ALLOWED_MA) ma = MAX_ALLOWED_MA;
+  intensidad = ma;
+  // Mapear linealmente intensidad (mA) a duty PWM (0..PWM_MAX)
+  if (intensidad == 0) pwmValor = 0;
+  else pwmValor = map(intensidad, 0, MAX_ALLOWED_MA, 0, PWM_MAX);
+}
 
 // ================== RECETA ==================
 #define MAX_CICLOS 10
@@ -103,7 +118,8 @@ void generarOnda() {
   } else {
     // Fase OFF: esperar el tiempo de reposo antes de encender
     if ((ahora - ultimoPulso) >= tiempoOffUs) {
-      actualizarPWM(intensidad);  // Encender con la amplitud configurada
+      // Encender con el PWM calculado desde la intensidad en mA
+      actualizarPWM(pwmValor);
       pulsoEncendido = true;
       ultimoPulso = ahora;
     }
@@ -585,11 +601,12 @@ void setupServer() {
   // Endpoint para cambiar intensidad en tiempo real
   server.on("/set_intensidad", []() {
     if (server.hasArg("v")) {
-      intensidad = server.arg("v").toInt();
-      if (intensidad < 0) intensidad = 0;
-      if (intensidad > 255) intensidad = 255;
-      Serial.print("Intensidad: ");
-      Serial.println(intensidad);
+      int ma = server.arg("v").toInt();
+      actualizarIntensidadMa(ma);
+      Serial.print("Intensidad (mA): ");
+      Serial.print(intensidad);
+      Serial.print(" -> PWM: ");
+      Serial.println(pwmValor);
       server.send(200, "text/plain", "OK");
     }
   });
@@ -673,9 +690,8 @@ void setupServer() {
   // Endpoint para iniciar terapia (usa la receta cargada)
   server.on("/iniciar", []() {
     if (server.hasArg("int")) {
-      intensidad = server.arg("int").toInt();
-      if (intensidad < 0) intensidad = 0;
-      if (intensidad > 255) intensidad = 255;
+      int ma = server.arg("int").toInt();
+      actualizarIntensidadMa(ma);
     }
     if (numCiclos == 0) {
       server.send(400, "text/plain", "No hay receta cargada");
@@ -688,12 +704,16 @@ void setupServer() {
   // Endpoint para detener terapia
   server.on("/detener", []() {
     detenerTerapiaManual();
+    actualizarIntensidadMa(0);
+    actualizarPWM(0);
     server.send(200, "text/plain", "OK");
   });
   
   // Endpoint para emergencia (detiene todo y pone intensidad 0)
   server.on("/emergencia", []() {
     emergenciaTotal();
+    actualizarIntensidadMa(0);
+    actualizarPWM(0);
     server.send(200, "text/plain", "OK");
   });
   
@@ -733,7 +753,8 @@ void setupServer() {
     String json = "{";
     json += "\"activa\":" + String(terapiaActiva ? "true" : "false") + ",";
     json += "\"estado\":\"" + estadoStr + "\",";
-    json += "\"intensidad\":" + String(intensidad) + ",";
+    json += "\"intensidad_ma\":" + String(intensidad) + ","; // mA
+    json += "\"pwm\":" + String(pwmValor) + ",";
     json += "\"frecuencia_hz\":" + String(frecuenciaHz) + ",";
     json += "\"ancho_pulso_ms\":" + String(anchoPulsoMs, 2) + ",";
     json += "\"receta_id\":\"" + recetaId + "\",";
