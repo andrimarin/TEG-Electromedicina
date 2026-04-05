@@ -321,16 +321,15 @@ POST {{baseUrl}}/receta
 Content-Type: application/json
 
 {
-  "receta_id": "test_exceso_ciclos",
-  "num_ciclos": 15,
+  "receta_id": "test_de ciclos",
+  "num_ciclos": 2,
   "ciclos": [
-    {"trabajo_seg": 5, "pausa_seg": 2},
-    {"trabajo_seg": 5, "pausa_seg": 2},
-    {"trabajo_seg": 5, "pausa_seg": 0}
+    {"trabajo_seg": 30, "pausa_seg": 20},
+    {"trabajo_seg": 30, "pausa_seg": 30}
   ],
   "parametros_pulso": {
     "frecuencia_hz": 100,
-    "ancho_pulso_ms": 0.2
+    "ancho_pulso_ms": 0.5
   }
 }
 
