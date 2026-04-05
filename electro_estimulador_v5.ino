@@ -73,10 +73,8 @@ void apagarElectrodoTotal() {
   // En lógica inversa, 255 de duty cycle es el estado de menor energía
   ledcWrite(PIN_TENS, 255); 
   pulsoEncendido = false;
-  
   // Forzar estado físico HIGH (MOSFET bloqueado)
   digitalWrite(PIN_TENS, FISICO_APAGADO); 
-  
   Serial.println("⚡ Estado Seguro: Pin en HIGH (MOSFET bloqueado)"); 
 }
 
@@ -84,7 +82,7 @@ void apagarElectrodoTotal() {
 // ================== GENERACIÓN DE ONDA (por receta) ==================
 // Solo genera pulsos cuando estadoActual == ESTADO_TRABAJANDO
 // Usa frecuenciaHz y anchoPulsoMs de la receta
-  void generarOnda() {
+void generarOnda() {
     if (estadoActual != ESTADO_TRABAJANDO || intensidad == 0) {
       if (pulsoEncendido) apagarElectrodoTotal();
       return;
@@ -112,8 +110,7 @@ void apagarElectrodoTotal() {
         ultimoPulso = ahora;
       }
     }
-  }
-
+}
 
 
 // ================== MÁQUINA DE ESTADOS DE TERAPIA ==================
@@ -159,7 +156,6 @@ void gestionarReceta() {
 
 void avanzarAlSiguienteCiclo() {
   cicloActualIdx++;
-  
   if (cicloActualIdx >= numCiclos) {
     // ====== RECETA COMPLETADA: APAGADO TOTAL ======
     finalizarTerapia();
@@ -188,7 +184,7 @@ void iniciarReceta() {
   estadoActual = ESTADO_TRABAJANDO;
   terapiaActiva = true;
   inicioFaseMs = millis();
-  ultimoPulso = micros();
+  ultimoPulso  = micros();
   
   Serial.println("=== RECETA INICIADA ===");
   Serial.print("Receta: ");
@@ -206,40 +202,37 @@ void iniciarReceta() {
 }
 
 void finalizarTerapia() {
-  estadoActual = ESTADO_FINALIZADO;
-  terapiaActiva = false;
-  intensidad = 0;
-  apagarElectrodoTotal(); // Esta función ya pone el pin en HIGH
-  
-  // Triple seguridad: NUNCA pongas LOW aquí
-  delay(1);
-  actualizarPWM(255); // 255 es apagado en lógica inversa
-  digitalWrite(PIN_TENS, FISICO_APAGADO); // Debe ser HIGH
-  
-  Serial.println("=== RECETA FINALIZADA ===");
-  Serial.println("⚡ Electrodo APAGADO - 0V confirmado");
+    estadoActual = ESTADO_FINALIZADO;
+    terapiaActiva = false;
+    intensidad = 0;
+    apagarElectrodoTotal(); // Esta función ya pone el pin en HIGH
+    // Triple seguridad: NUNCA pongas LOW aquí
+    delay(1);
+    actualizarPWM(255); // 255 es apagado en lógica inversa
+    digitalWrite(PIN_TENS, FISICO_APAGADO); // Debe ser HIGH
+    Serial.println("=== RECETA FINALIZADA ===");
+    Serial.println("⚡ Electrodo APAGADO - 0V confirmado");
 }
 
 
 
 void detenerTerapiaManual() {
-  estadoActual = ESTADO_IDLE;
-  terapiaActiva = false;
-  apagarElectrodoTotal();
-  Serial.println("=== TERAPIA DETENIDA MANUALMENTE ===");
+    estadoActual = ESTADO_IDLE;
+    terapiaActiva = false;
+    apagarElectrodoTotal();
+    Serial.println("=== TERAPIA DETENIDA MANUALMENTE ===");
 }
 
 void emergenciaTotal() {
-  estadoActual = ESTADO_IDLE;
-  terapiaActiva = false;
-  intensidad = 0;
-  apagarElectrodoTotal();
-  
-  // Seguridad extra: Asegurar el estado HIGH
-  delay(1);
-  actualizarPWM(255); 
-  digitalWrite(PIN_TENS, FISICO_APAGADO); // Corregido: de LOW a HIGH
-  Serial.println("!!! PARADA DE EMERGENCIA ACTIVADA !!!"); 
+    estadoActual = ESTADO_IDLE;
+    terapiaActiva = false;
+    intensidad = 0;
+    apagarElectrodoTotal();
+    // Seguridad extra: Asegurar el estado HIGH
+    delay(1);
+    actualizarPWM(255); 
+    digitalWrite(PIN_TENS, FISICO_APAGADO); // Corregido: de LOW a HIGH
+    Serial.println("!!! PARADA DE EMERGENCIA ACTIVADA !!!"); 
 }
 
 // ================== INTERFAZ WEB ==================
@@ -807,7 +800,7 @@ void descargarRecetaServidor() {
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  
+
   Serial.println("\n=================================");
   Serial.println("⚡ ELECTROTERAPIA TENS - WiFiManager");
   Serial.println("=================================");
@@ -838,11 +831,8 @@ void setup() {
     delay(50);
   }
   digitalWrite(PIN_LED_BUILTIN, LOW);
-
   // ========== WIFIMANAGER - Configuración WiFi sin hardcodear ==========
   WiFiManager wifiManager;
-  
-  
   // Configurar timeout (si no se configura en 3 minutos, el ESP32 se reinicia)
   wifiManager.setConfigPortalTimeout(180);
 
@@ -851,10 +841,8 @@ void setup() {
     Serial.println("🔄 RECONFIGURACIÓN WiFi solicitada");
     Serial.println("   Borrando red guardada...");
     wifiManager.resetSettings();  // Borra SSID/password almacenados
-    
     // LED encendido fijo = modo configuración
     digitalWrite(PIN_LED_BUILTIN, HIGH);
-    
     Serial.println("📡 Portal de configuración abierto:");
     Serial.println("   1. Conecta tu celular a la red 'TENS_Config_WiFi'");
     Serial.println("   2. Abre 192.168.4.1 en el navegador");
@@ -882,7 +870,6 @@ void setup() {
   Serial.println(WiFi.localIP());
   Serial.print("📶 Red: ");
   Serial.println(WiFi.SSID());
-
   descargarRecetaServidor(); 
   
   // Parpadeo para indicar que está listo
@@ -895,7 +882,6 @@ void setup() {
   
   // Iniciar servidor web
   setupServer();
-  
   Serial.println("=================================");
   Serial.print("🌐 Abre en tu navegador: http://");
   Serial.println(WiFi.localIP());
@@ -906,13 +892,10 @@ void setup() {
 // ================== LOOP ==================
 void loop() {
   server.handleClient();
-  
   // Gestionar máquina de estados de la receta (trabajo/pausa/fin)
   gestionarReceta();
-  
   // Generar onda solo si estamos en fase de trabajo
   generarOnda();
-  
   // LED indicador
   static unsigned long lastBlink = 0;
   if (estadoActual == ESTADO_TRABAJANDO && intensidad > 0) {
@@ -930,6 +913,5 @@ void loop() {
   } else {
     digitalWrite(PIN_LED_BUILTIN, LOW);
   }
-  
   delay(5);
 }
