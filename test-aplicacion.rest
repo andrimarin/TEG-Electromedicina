@@ -1,15 +1,57 @@
-@host = http://192.168.1.186
-## Formato de Receta JSON
-### La receta JSON debe seguir el siguiente formato para ser válida:
-@name = receta_01
-POST http://192.168.1.186:5000/receta
+// ============================================================
+// TEST DE ENDPOINTS - Electroestimulador TENS con Recetas JSON
+// Usar con extensión "REST Client" de VS Code (humao.rest-client)
+// ============================================================
+// ⚠️ Cambia la IP por la que muestre tu ESP32 en el Serial Monitor
+@baseUrl = http://192.168.1.186
+
+###############################################
+# 1. PÁGINA PRINCIPAL (HTML)
+# Debe devolver la interfaz web completa
+###############################################
+GET {{baseUrl}}/
+Accept: text/html
+
+###
+
+###############################################
+# 2. OBTENER IP DEL ESP32
+# Devuelve la IP en texto plano
+###############################################
+GET {{baseUrl}}/ip
+Accept: text/plain
+
+###
+
+###############################################
+# 3. ESTADO COMPLETO (antes de cargar receta)
+# Debe mostrar: idle, intensidad=0, num_ciclos=0
+###############################################
+GET {{baseUrl}}/estado_completo
+Accept: application/json
+
+###
+
+###############################################
+# 4. INTENTAR INICIAR SIN RECETA CARGADA
+# Debe devolver 400: "No hay receta cargada"
+###############################################
+GET {{baseUrl}}/iniciar?int=128
+
+###
+
+###############################################
+# 5. CARGAR RECETA - Caso exitoso (1 ciclo)
+# Debe devolver JSON con ok:true
+###############################################
+POST {{baseUrl}}/receta
 Content-Type: application/json
 
 {
   "receta_id": "terapia_01",
   "num_ciclos": 1,
   "ciclos": [
-    {"trabajo_seg": 300, "pausa_seg": 60}
+    {"trabajo_seg": 10, "pausa_seg": 5}
   ],
   "parametros_pulso": {
     "frecuencia_hz": 50,
@@ -17,17 +59,128 @@ Content-Type: application/json
   }
 }
 
-### Ejemplo de receta JSON válida:
-@name = receta_02
-POST @host/receta
+###
+
+###############################################
+# 6. CARGAR RECETA - Múltiples ciclos
+# Debe devolver ok:true con num_ciclos=3
+###############################################
+POST {{baseUrl}}/receta
 Content-Type: application/json
 
 {
-  "receta_id": "terapia_02",
-  "num_ciclos": 2,
+  "receta_id": "rehabilitacion_rodilla",
+  "num_ciclos": 3,
   "ciclos": [
-    {"trabajo_seg": 300, "pausa_seg": 60},
-    {"trabajo_seg": 300, "pausa_seg": 60}
+    {"trabajo_seg": 15, "pausa_seg": 5},
+    {"trabajo_seg": 20, "pausa_seg": 5},
+    {"trabajo_seg": 10, "pausa_seg": 0}
+  ],
+  "parametros_pulso": {
+    "frecuencia_hz": 80,
+    "ancho_pulso_ms": 0.3
+  }
+}
+
+###
+
+###############################################
+# 7. CARGAR RECETA - JSON INVÁLIDO
+# Debe devolver 400: "JSON invalido"
+###############################################
+POST {{baseUrl}}/receta
+Content-Type: application/json
+
+{ esto no es json valido }
+
+###
+
+###############################################
+# 8. CARGAR RECETA - Valores límite (frecuencia alta)
+# frecuencia_hz se debe clampear a 150
+###############################################
+POST {{baseUrl}}/receta
+Content-Type: application/json
+
+{
+  "receta_id": "test_limites_altos",
+  "num_ciclos": 1,
+  "ciclos": [
+    {"trabajo_seg": 5, "pausa_seg": 0}
+  ],
+  "parametros_pulso": {
+    "frecuencia_hz": 999,
+    "ancho_pulso_ms": 50.0
+  }
+}
+
+###
+
+###############################################
+# 9. CARGAR RECETA - Valores límite (frecuencia baja)
+# frecuencia_hz se debe clampear a 1
+###############################################
+POST {{baseUrl}}/receta
+Content-Type: application/json
+
+{
+  "receta_id": "test_limites_bajos",
+  "num_ciclos": 1,
+  "ciclos": [
+    {"trabajo_seg": 5, "pausa_seg": 0}
+  ],
+  "parametros_pulso": {
+    "frecuencia_hz": 0,
+    "ancho_pulso_ms": 0.001
+  }
+}
+
+###
+
+###############################################
+# 10. CAMBIAR INTENSIDAD - Valor medio
+# Debe devolver "OK"
+###############################################
+GET {{baseUrl}}/set_intensidad?v=128
+
+###
+
+###############################################
+# 11. CAMBIAR INTENSIDAD - Máximo
+# Debe devolver "OK", intensidad=255
+###############################################
+GET {{baseUrl}}/set_intensidad?v=255
+
+###
+
+###############################################
+# 12. CAMBIAR INTENSIDAD - Valor negativo (clamp a 0)
+# Debe aceptar pero internamente clampear a 0
+###############################################
+GET {{baseUrl}}/set_intensidad?v=-50
+
+###
+
+###############################################
+# 13. CAMBIAR INTENSIDAD - Valor excesivo (clamp a 255)
+# Debe aceptar pero internamente clampear a 255
+###############################################
+GET {{baseUrl}}/set_intensidad?v=999
+
+###
+
+###############################################
+# 14. CARGAR RECETA CORTA + VERIFICAR ESTADO
+# Primero cargamos una receta de 10s trabajo
+###############################################
+POST {{baseUrl}}/receta
+Content-Type: application/json
+
+{
+  "receta_id": "test_corto",
+  "num_ciclos": 1,
+  "ciclos": [
+    {"trabajo_seg": 10, "pausa_seg": 3}
   ],
   "parametros_pulso": {
     "frecuencia_hz": 50,
@@ -35,25 +188,212 @@ Content-Type: application/json
   }
 }
 
+###
 
-### iniciar terapia con intensidad N
-@name = iniciar_terapia
-GET @host/iniciar?int=5
+###############################################
+# 15. CONFIGURAR INTENSIDAD ANTES DE INICIAR
+###############################################
+GET {{baseUrl}}/set_intensidad?v=100
 
-### detener terapia
-@name = detener_terapia
-GET @host/detener
+###
 
-### parada de emergencia
-@name = emergencia
-GET @host/emergencia
+###############################################
+# 16. INICIAR TERAPIA (con intensidad por parámetro)
+# Debe devolver "OK" y estado pasa a "trabajando"
+###############################################
+GET {{baseUrl}}/iniciar?int=150
 
+###
 
-### ajustar intensidad en tiempo real
-@name = ajustar_intensidad
-GET @host/set_intensidad?v=7    
+###############################################
+# 17. VERIFICAR ESTADO DURANTE TERAPIA
+# Debe mostrar: activa=true, estado="trabajando"
+# Ejecutar rápido después del paso 16
+###############################################
+GET {{baseUrl}}/estado_completo
+Accept: application/json
 
-### estado completo
-@name = estado_completo
-GET @host/estado_completo   
+###
 
+###############################################
+# 18. CAMBIAR INTENSIDAD DURANTE TERAPIA
+# Debe actualizar la intensidad en tiempo real
+###############################################
+GET {{baseUrl}}/set_intensidad?v=200
+
+###
+
+###############################################
+# 19. VERIFICAR PROGRESO (ejecutar varias veces)
+# El campo "progreso" debe ir aumentando
+###############################################
+GET {{baseUrl}}/estado_completo
+Accept: application/json
+
+###
+
+###############################################
+# 20. DETENER TERAPIA MANUALMENTE
+# Debe devolver "OK" y estado pasa a "idle"
+###############################################
+GET {{baseUrl}}/detener
+
+###
+
+###############################################
+# 21. VERIFICAR ESTADO DESPUÉS DE DETENER
+# Debe mostrar: activa=false, estado="idle"
+###############################################
+GET {{baseUrl}}/estado_completo
+Accept: application/json
+
+###
+
+###############################################
+# 22. REINICIAR TERAPIA PARA TEST DE EMERGENCIA
+# Primero cargar receta larga
+###############################################
+POST {{baseUrl}}/receta
+Content-Type: application/json
+
+{
+  "receta_id": "test_emergencia",
+  "num_ciclos": 1,
+  "ciclos": [
+    {"trabajo_seg": 300, "pausa_seg": 0}
+  ],
+  "parametros_pulso": {
+    "frecuencia_hz": 50,
+    "ancho_pulso_ms": 0.5
+  }
+}
+
+###
+
+###############################################
+# 23. INICIAR TERAPIA LARGA
+###############################################
+GET {{baseUrl}}/iniciar?int=128
+
+###
+
+###############################################
+# 24. PARADA DE EMERGENCIA
+# Debe devolver "OK", intensidad=0, estado="idle"
+###############################################
+GET {{baseUrl}}/emergencia
+
+###
+
+###############################################
+# 25. VERIFICAR ESTADO DESPUÉS DE EMERGENCIA
+# Debe mostrar: activa=false, estado="idle",
+# intensidad=0 (la emergencia pone todo a 0)
+###############################################
+GET {{baseUrl}}/estado_completo
+Accept: application/json
+
+###
+
+###############################################
+# 26. INTENTAR INICIAR CON INTENSIDAD 0
+# Debe iniciar pero NO generar onda
+# (generarOnda() sale si intensidad==0)
+###############################################
+GET {{baseUrl}}/iniciar?int=0
+
+###
+
+###############################################
+# 27. VERIFICAR ESTADO CON INTENSIDAD 0
+###############################################
+GET {{baseUrl}}/estado_completo
+Accept: application/json
+
+###
+
+###############################################
+# 28. CARGAR RECETA - Exceso de ciclos (>MAX_CICLOS=10)
+# num_ciclos=15 pero solo 3 definidos
+# Debe ajustar num_ciclos a 3 (los definidos)
+###############################################
+POST {{baseUrl}}/receta
+Content-Type: application/json
+
+{
+  "receta_id": "test_exceso_ciclos",
+  "num_ciclos": 15,
+  "ciclos": [
+    {"trabajo_seg": 5, "pausa_seg": 2},
+    {"trabajo_seg": 5, "pausa_seg": 2},
+    {"trabajo_seg": 5, "pausa_seg": 0}
+  ],
+  "parametros_pulso": {
+    "frecuencia_hz": 100,
+    "ancho_pulso_ms": 0.2
+  }
+}
+
+###
+
+###############################################
+# 29. TEST COMPLETO AUTOMÁTICO
+# Cargar receta muy corta (3s trabajo + 2s pausa)
+# para ver el ciclo completo hasta FINALIZADO
+###############################################
+POST {{baseUrl}}/receta
+Content-Type: application/json
+
+{
+  "receta_id": "test_ciclo_completo",
+  "num_ciclos": 1,
+  "ciclos": [
+    {"trabajo_seg": 3, "pausa_seg": 2}
+  ],
+  "parametros_pulso": {
+    "frecuencia_hz": 50,
+    "ancho_pulso_ms": 0.5
+  }
+}
+
+###
+
+# Iniciar la receta corta
+GET {{baseUrl}}/iniciar?int=128
+
+###
+
+# Esperar ~6 segundos y verificar que finalizó
+# Debe mostrar estado="finalizado", progreso=100
+GET {{baseUrl}}/estado_completo
+Accept: application/json
+
+###
+
+###############################################
+# 30. CARGAR RECETA CON CAMPOS FALTANTES
+# Sin parametros_pulso → debe usar defaults
+# (frecuencia=50, ancho=0.5)
+###############################################
+POST {{baseUrl}}/receta
+Content-Type: application/json
+
+{
+  "receta_id": "test_defaults",
+  "num_ciclos": 1,
+  "ciclos": [
+    {"trabajo_seg": 5}
+  ]
+}
+
+###
+
+###############################################
+# 31. ELIMINAR TOKENS [cite:] (test de limpieza)
+# Verificar que el servidor responde sin errores
+# después de limpiar los comentarios [cite:]
+###############################################
+GET {{baseUrl}}/estado_completo
+Accept: application/json
+
+###
