@@ -79,16 +79,7 @@ void apagarElectrodoTotal() {
   Serial.println("⚡ Estado Seguro: Pin en HIGH (MOSFET bloqueado)"); //[cite: 182]
 }
 
-void emergenciaTotal() {
-  estadoActual = ESTADO_IDLE;
-  terapiaActiva = false;
-  intensidad = 0;
-  apagarElectrodoTotal();
-  // Triple verificación con delay para estabilidad
-  delay(1);
-  digitalWrite(PIN_TENS, FISICO_APAGADO);
-  Serial.println("!!! PARADA DE EMERGENCIA ACTIVADA !!!"); ///[cite: 213]
-}
+
 // ================== GENERACIÓN DE ONDA (por receta) ==================
 // Solo genera pulsos cuando estadoActual == ESTADO_TRABAJANDO
 // Usa frecuenciaHz y anchoPulsoMs de la receta
@@ -249,7 +240,6 @@ void emergenciaTotal() {
   digitalWrite(PIN_TENS, FISICO_APAGADO); // Corregido: de LOW a HIGH
   Serial.println("!!! PARADA DE EMERGENCIA ACTIVADA !!!"); //[cite: 213]
 }
-
 
 // ================== INTERFAZ WEB ==================
 String getHTML() {
