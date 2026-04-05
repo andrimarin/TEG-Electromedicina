@@ -10,6 +10,7 @@
 #include <WebServer.h>
 #include <WiFiManager.h>      // Configuración WiFi fácil
 #include <ArduinoJson.h>      // Parseo de recetas JSON
+#include <HTTPClient.h> // Asegúrate de incluirla al inicio
 
 // ================== PINES ==================
 const int PIN_TENS = 23;        // GPIO23 - Salida PWM al optoacoplador/MOSFET
@@ -66,16 +67,16 @@ void actualizarPWM(int valor) {
 
 // ================== APAGADO GARANTIZADO ==================
 // Doble verificación: apaga PWM Y pone el pin en LOW
+
 void apagarElectrodoTotal() {
-  // 1. Detener el PWM (poniéndolo al valor que en tu circuito es "apagado")
-  ledcWrite(PIN_TENS, 256); 
+  // En lógica inversa, 255 de duty cycle es el estado de menor energía
+  ledcWrite(PIN_TENS, 255); 
   pulsoEncendido = false;
   
-  // 2. Forzar estado físico HIGH (Seguridad absoluta)
+  // Forzar estado físico HIGH (MOSFET bloqueado)
   digitalWrite(PIN_TENS, FISICO_APAGADO); 
   
-  // 3. Registrar en Serial para monitoreo
-  Serial.println("⚡ Estado Seguro: Pin en HIGH (0V al paciente)"); [cite: 182]
+  Serial.println("⚡ Estado Seguro: Pin en HIGH (MOSFET bloqueado)"); [cite: 182]
 }
 
 void emergenciaTotal() {
@@ -215,19 +216,21 @@ void iniciarReceta() {
 }
 
 void finalizarTerapia() {
-  // ====== APAGADO TOTAL GARANTIZADO ======
   estadoActual = ESTADO_FINALIZADO;
   terapiaActiva = false;
   intensidad = 0;
-  apagarElectrodoTotal();
-  // Triple seguridad: volver a escribir 0
+  apagarElectrodoTotal(); // Esta función ya pone el pin en HIGH
+  
+  // Triple seguridad: NUNCA pongas LOW aquí
   delay(1);
-  actualizarPWM(0);
-  digitalWrite(PIN_TENS, LOW);
+  actualizarPWM(255); // 255 es apagado en lógica inversa
+  digitalWrite(PIN_TENS, FISICO_APAGADO); // Debe ser HIGH
   
   Serial.println("=== RECETA FINALIZADA ===");
   Serial.println("⚡ Electrodo APAGADO - 0V confirmado");
 }
+
+
 
 void detenerTerapiaManual() {
   estadoActual = ESTADO_IDLE;
@@ -241,12 +244,14 @@ void emergenciaTotal() {
   terapiaActiva = false;
   intensidad = 0;
   apagarElectrodoTotal();
-  // Seguridad extra
+  
+  // Seguridad extra: Asegurar el estado HIGH
   delay(1);
-  actualizarPWM(0);
-  digitalWrite(PIN_TENS, LOW);
-  Serial.println("!!! PARADA DE EMERGENCIA !!!");
+  actualizarPWM(255); 
+  digitalWrite(PIN_TENS, FISICO_APAGADO); // Corregido: de LOW a HIGH
+  Serial.println("!!! PARADA DE EMERGENCIA ACTIVADA !!!"); [cite: 213]
 }
+
 
 // ================== INTERFAZ WEB ==================
 String getHTML() {
@@ -763,6 +768,52 @@ void setupServer() {
   Serial.println("✅ Servidor web iniciado");
 }
 
+void descargarRecetaServidor() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    
+    // URL de tu servidor (ejemplo: un .json en GitHub o tu propia API)
+    String url = "http://tu-servidor.com/receta.json";
+    
+    http.begin(url);
+    int httpCode = http.GET();
+    
+    if (httpCode > 0) {
+      String payload = http.getString();
+      Serial.println("Receta descargada:");
+      Serial.println(payload);
+      
+      // Reutilizamos la lógica que ya tienes para procesar el JSON
+      JsonDocument doc;
+      DeserializationError error = deserializeJson(doc, payload); [cite: 123, 287]
+      
+      if (!error) {
+        // Extraer datos (Copia la lógica que tienes en server.on("/receta"))
+        recetaId = doc["receta_id"] | "externa"; [cite: 125, 289]
+        numCiclos = doc["num_ciclos"] | 0; [cite: 126, 290]
+        frecuenciaHz = doc["parametros_pulso"]["frecuencia_hz"] | 50; [cite: 127, 291]
+        anchoPulsoMs = doc["parametros_pulso"]["ancho_pulso_ms"] | 0.5; [cite: 128, 292]
+        
+        // Cargar ciclos al array
+        JsonArray ciclosArr = doc["ciclos"].as<JsonArray>(); [cite: 130, 294]
+        int idx = 0;
+        for (JsonObject c : ciclosArr) {
+          if (idx >= MAX_CICLOS) break;
+          ciclos[idx].trabajoSeg = c["trabajo_seg"] | 0; [cite: 131, 295]
+          ciclos[idx].pausaSeg = c["pausa_seg"] | 0;
+          idx++;
+        }
+        numCiclos = idx;
+        Serial.println("✅ Receta sincronizada con éxito.");
+      }
+    } else {
+      Serial.printf("❌ Error en HTTP: %s\n", http.errorToString(httpCode).c_str());
+    }
+    http.end();
+  }
+}
+
+
 // ================== SETUP ==================
 void setup() {
   Serial.begin(115200);
@@ -774,12 +825,12 @@ void setup() {
   
   // Configurar pines
   digitalWrite(PIN_TENS, FISICO_APAGADO);
-  pinMode(PIN_LED_BUILTIN, OUTPUT);
-  digitalWrite(PIN_LED_BUILTIN, LOW);
+  pinMode(PIN_TENS, OUTPUT);
+
   
   // Configurar PWM en GPIO23
   ledcAttach(PIN_TENS, frecuenciaHz, 8);
-  ledcWrite(PIN_TENS, 0);
+  ledcWrite(PIN_TENS, 255);
   
   // ========== WIFIMANAGER - Configuración WiFi sin hardcodear ==========
   WiFiManager wifiManager;
