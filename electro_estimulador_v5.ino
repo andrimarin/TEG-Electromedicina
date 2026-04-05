@@ -8,19 +8,19 @@
 
 #include <WiFi.h>
 #include <WebServer.h>
-#include <WiFiManager.h>      // Configuración WiFi fácil
-#include <ArduinoJson.h>      // Parseo de recetas JSON
-#include <HTTPClient.h> // Asegúrate de incluirla al inicio
+#include <WiFiManager.h>  // Configuración WiFi fácil
+#include <ArduinoJson.h>  // Parseo de recetas JSON
+#include <HTTPClient.h>   // Asegúrate de incluirla al inicio
 
-// ================== PINES ==================
+// ================== PINES =================================
+
 const int PIN_TENS = 23;        // GPIO23 - Salida PWM al optoacoplador/MOSFET
 const int PIN_LED_BUILTIN = 2;  // LED integrado del ESP32
 const int PIN_BOOT = 0;
-
 const int FISICO_ENCENDIDO = LOW;  // LOW activa el optoacoplador -> Enciende MOSFET
 const int FISICO_APAGADO = HIGH;   // HIGH apaga el optoacoplador -> Apaga MOSFET
 
-// ================== MÁQUINA DE ESTADOS ==================
+// ================== MÁQUINA DE ESTADOS ========================
 enum EstadoTerapia {
   ESTADO_IDLE,        // Sin terapia, electrodo apagado
   ESTADO_TRABAJANDO,  // Ciclo activo: generando pulsos
