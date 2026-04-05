@@ -76,7 +76,7 @@ void apagarElectrodoTotal() {
   // Forzar estado físico HIGH (MOSFET bloqueado)
   digitalWrite(PIN_TENS, FISICO_APAGADO); 
   
-  Serial.println("⚡ Estado Seguro: Pin en HIGH (MOSFET bloqueado)"); //[cite: 182]
+  Serial.println("⚡ Estado Seguro: Pin en HIGH (MOSFET bloqueado)"); 
 }
 
 
@@ -238,7 +238,7 @@ void emergenciaTotal() {
   delay(1);
   actualizarPWM(255); 
   digitalWrite(PIN_TENS, FISICO_APAGADO); // Corregido: de LOW a HIGH
-  Serial.println("!!! PARADA DE EMERGENCIA ACTIVADA !!!"); //[cite: 213]
+  Serial.println("!!! PARADA DE EMERGENCIA ACTIVADA !!!"); 
 }
 
 // ================== INTERFAZ WEB ==================
@@ -773,21 +773,21 @@ void descargarRecetaServidor() {
       
       // Reutilizamos la lógica que ya tienes para procesar el JSON
       JsonDocument doc;
-      DeserializationError error = deserializeJson(doc, payload);// [cite: 123, 287]
+      DeserializationError error = deserializeJson(doc, payload);
       
       if (!error) {
         // Extraer datos (Copia la lógica que tienes en server.on("/receta"))
-        recetaId = doc["receta_id"] | "externa"; //[cite: 125, 289]
-        numCiclos = doc["num_ciclos"] | 0; //[cite: 126, 290]
-        frecuenciaHz = doc["parametros_pulso"]["frecuencia_hz"] | 50; //[cite: 127, 291]
-        anchoPulsoMs = doc["parametros_pulso"]["ancho_pulso_ms"] | 0.5; //[cite: 128, 292]
+        recetaId = doc["receta_id"] | "externa"; 
+        numCiclos = doc["num_ciclos"] | 0; 
+        frecuenciaHz = doc["parametros_pulso"]["frecuencia_hz"] | 50; 
+        anchoPulsoMs = doc["parametros_pulso"]["ancho_pulso_ms"] | 0.5; 
 
         // Cargar ciclos al array
-        JsonArray ciclosArr = doc["ciclos"].as<JsonArray>(); //[cite: 130, 294]
+        JsonArray ciclosArr = doc["ciclos"].as<JsonArray>(); 
         int idx = 0;
         for (JsonObject c : ciclosArr) {
           if (idx >= MAX_CICLOS) break;
-          ciclos[idx].trabajoSeg = c["trabajo_seg"] | 0; //[cite: 131, 295]
+          ciclos[idx].trabajoSeg = c["trabajo_seg"] | 0; 
           ciclos[idx].pausaSeg = c["pausa_seg"] | 0;
           idx++;
         }
@@ -842,7 +842,7 @@ void setup() {
   Serial.print("📡 IP del ESP32: ");
   Serial.println(WiFi.localIP());
 
-  descargarRecetaServidor(); //[cite: 123, 287]
+  descargarRecetaServidor(); 
   
   // Parpadeo para indicar que está listo
   for (int i = 0; i < 3; i++) {
