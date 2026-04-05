@@ -15,6 +15,9 @@
 const int PIN_TENS = 23;        // GPIO23 - Salida PWM al optoacoplador/MOSFET
 const int PIN_LED_BUILTIN = 2;  // LED integrado del ESP32
 
+const int FISICO_ENCENDIDO = LOW;  // LOW activa el optoacoplador -> Enciende MOSFET
+const int FISICO_APAGADO = HIGH;   // HIGH apaga el optoacoplador -> Apaga MOSFET
+
 // ================== MÁQUINA DE ESTADOS ==================
 enum EstadoTerapia {
   ESTADO_IDLE,        // Sin terapia, electrodo apagado
@@ -64,51 +67,63 @@ void actualizarPWM(int valor) {
 // ================== APAGADO GARANTIZADO ==================
 // Doble verificación: apaga PWM Y pone el pin en LOW
 void apagarElectrodoTotal() {
-  actualizarPWM(0);
+  // 1. Detener el PWM (poniéndolo al valor que en tu circuito es "apagado")
+  ledcWrite(PIN_TENS, 256); 
   pulsoEncendido = false;
-  // Seguridad extra: forzar el pin a LOW por si el PWM queda en estado alto
-  digitalWrite(PIN_TENS, LOW);
+  
+  // 2. Forzar estado físico HIGH (Seguridad absoluta)
+  digitalWrite(PIN_TENS, FISICO_APAGADO); 
+  
+  // 3. Registrar en Serial para monitoreo
+  Serial.println("⚡ Estado Seguro: Pin en HIGH (0V al paciente)"); [cite: 182]
 }
 
+void emergenciaTotal() {
+  estadoActual = ESTADO_IDLE;
+  terapiaActiva = false;
+  intensidad = 0;
+  
+  apagarElectrodoTotal();
+  
+  // Triple verificación con delay para estabilidad
+  delay(1);
+  digitalWrite(PIN_TENS, FISICO_APAGADO);
+  Serial.println("!!! PARADA DE EMERGENCIA ACTIVADA !!!"); [cite: 213]
+}
 // ================== GENERACIÓN DE ONDA (por receta) ==================
 // Solo genera pulsos cuando estadoActual == ESTADO_TRABAJANDO
 // Usa frecuenciaHz y anchoPulsoMs de la receta
-void generarOnda() {
-  // Si no estamos en fase de trabajo → electrodo apagado
-  if (estadoActual != ESTADO_TRABAJANDO || intensidad == 0) {
+  void generarOnda() {
+    if (estadoActual != ESTADO_TRABAJANDO || intensidad == 0) {
+      if (pulsoEncendido) apagarElectrodoTotal();
+      return;
+    }
+    
+    unsigned long ahora = micros();
+    unsigned long periodoUs = 1000000UL / frecuenciaHz; 
+    unsigned long anchoPulsoUs = (unsigned long)(anchoPulsoMs * 1000.0); 
+    unsigned long tiempoOffUs = periodoUs - anchoPulsoUs; 
+    
     if (pulsoEncendido) {
-      apagarElectrodoTotal();
-    }
-    return;
-  }
-  
-  unsigned long ahora = micros();
-  unsigned long periodoUs = 1000000UL / frecuenciaHz;              // Periodo total
-  unsigned long anchoPulsoUs = (unsigned long)(anchoPulsoMs * 1000.0); // Ancho de pulso en µs
-  unsigned long tiempoOffUs = periodoUs - anchoPulsoUs;             // Tiempo apagado
-  
-  // Protección: el ancho de pulso no puede ser mayor que el periodo
-  if (anchoPulsoUs >= periodoUs) {
-    anchoPulsoUs = periodoUs / 2;  // Limitar al 50%
-    tiempoOffUs = periodoUs - anchoPulsoUs;
-  }
-  
-  if (pulsoEncendido) {
-    // Fase ON: esperar a que termine el ancho del pulso
-    if ((ahora - ultimoPulso) >= anchoPulsoUs) {
-      actualizarPWM(0);        // Apagar
-      pulsoEncendido = false;
-      ultimoPulso = ahora;
-    }
-  } else {
-    // Fase OFF: esperar el tiempo de reposo antes de encender
-    if ((ahora - ultimoPulso) >= tiempoOffUs) {
-      actualizarPWM(intensidad);  // Encender con la amplitud configurada
-      pulsoEncendido = true;
-      ultimoPulso = ahora;
+      // Fase ON terminada -> Pasar a OFF (HIGH)
+      if ((ahora - ultimoPulso) >= anchoPulsoUs) {
+        digitalWrite(PIN_TENS, FISICO_APAGADO); // HIGH es apagado 
+        pulsoEncendido = false;
+        ultimoPulso = ahora;
+      }
+    } else {
+      // Fase OFF terminada -> Pasar a ON (LOW)
+      if ((ahora - ultimoPulso) >= tiempoOffUs) {
+        // Usamos ledcWrite con valor invertido para controlar la amplitud
+        // 255 - intensidad asegura que el slider web funcione de 0 a 255 correctamente
+        ledcWrite(PIN_TENS, 255 - intensidad); 
+        pulsoEncendido = true;
+        ultimoPulso = ahora;
+      }
     }
   }
-}
+
+
 
 // ================== MÁQUINA DE ESTADOS DE TERAPIA ==================
 void gestionarReceta() {
@@ -644,13 +659,13 @@ void setupServer() {
     Serial.print("Ciclos: ");
     Serial.println(numCiclos);
     for (int i = 0; i < numCiclos; i++) {
-      Serial.print("  Ciclo ");
-      Serial.print(i + 1);
-      Serial.print(": trabajo=");
-      Serial.print(ciclos[i].trabajoSeg);
-      Serial.print("s, pausa=");
-      Serial.print(ciclos[i].pausaSeg);
-      Serial.println("s");
+        Serial.print("  Ciclo ");
+        Serial.print(i + 1);
+        Serial.print(": trabajo=");
+        Serial.print(ciclos[i].trabajoSeg);
+        Serial.print("s, pausa=");
+        Serial.print(ciclos[i].pausaSeg);
+        Serial.println("s");
     }
     Serial.print("Frecuencia: ");
     Serial.print(frecuenciaHz);
@@ -758,6 +773,7 @@ void setup() {
   Serial.println("=================================");
   
   // Configurar pines
+  digitalWrite(PIN_TENS, FISICO_APAGADO);
   pinMode(PIN_LED_BUILTIN, OUTPUT);
   digitalWrite(PIN_LED_BUILTIN, LOW);
   
