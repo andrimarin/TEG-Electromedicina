@@ -83,9 +83,7 @@ void emergenciaTotal() {
   estadoActual = ESTADO_IDLE;
   terapiaActiva = false;
   intensidad = 0;
-  
   apagarElectrodoTotal();
-  
   // Triple verificación con delay para estabilidad
   delay(1);
   digitalWrite(PIN_TENS, FISICO_APAGADO);
