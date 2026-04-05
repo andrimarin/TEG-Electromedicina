@@ -847,10 +847,14 @@ void setup() {
     ESP.restart();
   }
   
+
+
   // Si llegamos aquí, estamos conectados
   Serial.println("✅ Conectado a WiFi!");
   Serial.print("📡 IP del ESP32: ");
   Serial.println(WiFi.localIP());
+
+  // descargarRecetaServidor(); [cite: 123, 287]
   
   // Parpadeo para indicar que está listo
   for (int i = 0; i < 3; i++) {
