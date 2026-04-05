@@ -762,7 +762,7 @@ void descargarRecetaServidor() {
     HTTPClient http;
     
     // URL de tu servidor (ejemplo: un .json en GitHub o tu propia API)
-    String url = "http://tesis.testbackup.online/receta.json";
+    String url = "https://tesis.testbackup.online/receta.json";
     
     http.begin(url);
     int httpCode = http.GET();
