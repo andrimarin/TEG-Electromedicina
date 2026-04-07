@@ -68,8 +68,6 @@ void apagarElectrodoTotal() {
   digitalWrite(PIN_TENS, FISICO_APAGADO); // HIGH = reposo SIEMPRE
   Serial.println("⚡ Estado Seguro: Pin en HIGH (MOSFET bloqueado)"); 
 }
-
-
 // ================== GENERACIÓN DE ONDA DIGITAL PURA ==================
 // Solo genera pulsos cuando estadoActual == ESTADO_TRABAJANDO
 // Usa frecuenciaHz y anchoPulsoMs de la receta
