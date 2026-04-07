@@ -29,12 +29,14 @@ enum EstadoTerapia {
 };
 
 EstadoTerapia estadoActual = ESTADO_IDLE;
+TaskHandle_t TareaRed;
 
 // ================== PARÁMETROS ==================
-int intensidad = 0;             // 0-255 (multiplicador del ancho de pulso)
-int frecuenciaHz = 50;          // Hz - de la receta
-float anchoPulsoMs = 0.5;       // ms - ancho del pulso de la receta
-bool terapiaActiva = false;     // Flag global de terapia en curso
+volatile int intensidad = 0;             // 0-255 (multiplicador del ancho de pulso)
+volatile int frecuenciaHz = 50;          // Hz - de la receta
+volatile float anchoPulsoMs = 0.5;       // ms - ancho del pulso de la receta
+volatile bool terapiaActiva = false;     // Flag global de terapia en curso
+volatile EstadoTerapia estadoActual = ESTADO_IDLE;
 
 // ================== RECETA ==================
 #define MAX_CICLOS 10
@@ -55,6 +57,16 @@ unsigned long ultimoPulso = 0;   // Microsegundos
 bool pulsoEncendido = false;
 
 WebServer server(80);
+
+// Prototipos de funciones
+void checkHeartbeat();
+void apagarElectrodoTotal();
+void emergenciaTotal();
+void iniciarReceta();
+void detenerTerapiaManual();
+void finalizarTerapia();
+void gestionarReceta();
+void generarOnda();
 
 // ================== CONFIGURACIÓN DIGITAL PURA ==================
 void configurarPin() {
