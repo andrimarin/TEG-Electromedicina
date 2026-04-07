@@ -58,8 +58,10 @@ WebServer server(80);
 
 // ================== CONFIGURACIÓN PWM ==================
 void configurarPWM() {
-  ledcAttach(PIN_TENS, frecuenciaHz, 8);
-  ledcWrite(PIN_TENS, 0);
+  //ledcAttach(PIN_TENS, frecuenciaHz, 8);
+  //ledcWrite(PIN_TENS, 0);
+  pinMode(PIN_TENS, OUTPUT);
+  digitalWrite(PIN_TENS, FISICO_APAGADO);
 }
 
 void actualizarPWM(int valor) {
@@ -71,9 +73,8 @@ void actualizarPWM(int valor) {
 
 void apagarElectrodoTotal() {
   // En lógica inversa, 255 de duty cycle es el estado de menor energía
-  ledcWrite(PIN_TENS, 255); 
+  // ledcWrite(PIN_TENS, 255); 
   pulsoEncendido = false;
-  
   // Forzar estado físico HIGH (MOSFET bloqueado)
   digitalWrite(PIN_TENS, FISICO_APAGADO); 
   
@@ -107,7 +108,8 @@ void apagarElectrodoTotal() {
       if ((ahora - ultimoPulso) >= tiempoOffUs) {
         // Usamos ledcWrite con valor invertido para controlar la amplitud
         // 255 - intensidad asegura que el slider web funcione de 0 a 255 correctamente
-        ledcWrite(PIN_TENS, 255 - intensidad); 
+        //ledcWrite(PIN_TENS, 255 - intensidad);
+        digitalWrite(PIN_TENS, FISICO_ENCENDIDO); 
         pulsoEncendido = true;
         ultimoPulso = ahora;
       }
@@ -237,7 +239,7 @@ void emergenciaTotal() {
   
   // Seguridad extra: Asegurar el estado HIGH
   delay(1);
-  actualizarPWM(255); 
+  // actualizarPWM(255); 
   digitalWrite(PIN_TENS, FISICO_APAGADO); // Corregido: de LOW a HIGH
   Serial.println("!!! PARADA DE EMERGENCIA ACTIVADA !!!"); 
 }
