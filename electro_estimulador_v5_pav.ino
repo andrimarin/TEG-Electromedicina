@@ -801,6 +801,21 @@ void descargarRecetaServidor() {
   }
 }
 
+void codigoTareaRed(void * pvParameters) {
+  for(;;) {
+    server.handleClient(); // Servidor web local
+    
+    static unsigned long lastHeartbeat = 0;
+    // Eliminamos el 'terapiaActiva' para que siempre escuche
+    if (WiFi.status() == WL_CONNECTED && millis() - lastHeartbeat > 3000) {
+      lastHeartbeat = millis();
+      checkHeartbeat(); 
+    }
+    
+    // Un pequeño delay para que el RTOS no colapse el núcleo
+    vTaskDelay(10 / portTICK_PERIOD_MS); 
+  }
+}
 
 // ================== SETUP ==================
 void setup() {
@@ -897,36 +912,35 @@ void setup() {
   Serial.println(WiFi.localIP());
   Serial.println("💡 Para reconfigurar WiFi: reinicia con BOOT presionado");
   Serial.println("=================================");
+  Serial.println("=================================");
+  
+  // Iniciar la Tarea de Red en el Núcleo 0
+  xTaskCreatePinnedToCore(
+    codigoTareaRed,   // Función de la tarea
+    "TareaRed",       // Nombre de la tarea
+    10000,            // Tamaño de la pila
+    NULL,             // Parámetros
+    1,                // Prioridad
+    &TareaRed,        // Handle
+    0                 // Asignar al Núcleo 0 (WiFi)
+  );
 }
 
 // ================== LOOP ==================
 void loop() {
-  server.handleClient();
+  // Aquí YA NO van server.handleClient() ni checkHeartbeat()
   
-  // Gestionar máquina de estados de la receta (trabajo/pausa/fin)
   gestionarReceta();
-  
-  // Generar onda solo si estamos en fase de trabajo
-  generarOnda();
-
-  // Heartbeat solo si hay terapia activa Y conexión estable
-  static unsigned long lastHeartbeat = 0;
-  if (terapiaActiva && WiFi.status() == WL_CONNECTED && 
-      millis() - lastHeartbeat > 3000) { // 3s en lugar de 2s
-    lastHeartbeat = millis();
-    checkHeartbeat(); 
-  }
+  generarOnda();     // Ahora esta onda NUNCA será interrumpida por el lag de internet
   
   // LED indicador
   static unsigned long lastBlink = 0;
   if (estadoActual == ESTADO_TRABAJANDO && intensidad > 0) {
-    // Parpadeo rápido: terapia activa
     if (millis() - lastBlink > 300) {
       lastBlink = millis();
       digitalWrite(PIN_LED_BUILTIN, !digitalRead(PIN_LED_BUILTIN));
     }
   } else if (estadoActual == ESTADO_PAUSA) {
-    // Parpadeo lento: en pausa
     if (millis() - lastBlink > 1000) {
       lastBlink = millis();
       digitalWrite(PIN_LED_BUILTIN, !digitalRead(PIN_LED_BUILTIN));
@@ -934,8 +948,9 @@ void loop() {
   } else {
     digitalWrite(PIN_LED_BUILTIN, LOW);
   }
+  delayMicroseconds(100);
+  // Ojo: En tareas de tiempo crítico generadas por software
   
-  delay(5);
 }
 
 void checkHeartbeat() {
