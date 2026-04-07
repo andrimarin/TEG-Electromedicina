@@ -922,6 +922,14 @@ void loop() {
   
   // Generar onda solo si estamos en fase de trabajo
   generarOnda();
+
+  // Heartbeat solo si hay terapia activa Y conexión estable
+  static unsigned long lastHeartbeat = 0;
+  if (terapiaActiva && WiFi.status() == WL_CONNECTED && 
+      millis() - lastHeartbeat > 3000) { // 3s en lugar de 2s
+    lastHeartbeat = millis();
+    checkHeartbeat(); 
+  }
   
   // LED indicador
   static unsigned long lastBlink = 0;
@@ -942,4 +950,43 @@ void loop() {
   }
   
   delay(5);
+}
+
+void checkHeartbeat() {
+  HTTPClient http;
+  http.setTimeout(2000); // Timeout corto para no bloquear
+  http.begin("https://tesis.testbackup.online/api/heartbeat");
+  
+  int httpCode = http.GET();
+  if (httpCode == 200) {
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, http.getString());
+    
+    if (!error) {
+      // Solo actualizar si los valores son válidos y diferentes
+      float newPulseWidth = doc["pulse_width_ms"] | -1.0f;
+      int newIntensity = doc["intensity"] | -1;
+      
+      if (newPulseWidth > 0 && newPulseWidth != anchoPulsoMs) {
+        anchoPulsoMs = newPulseWidth;
+        Serial.println("📡 Ancho de pulso actualizado: " + String(anchoPulsoMs) + "ms");
+      }
+      
+      if (newIntensity >= 0 && newIntensity <= 255 && newIntensity != intensidad) {
+        intensidad = newIntensity;
+        Serial.println("📡 Intensidad actualizada: " + String(intensidad));
+      }
+      
+      String cmd = doc["command"] | "NONE";
+      if (cmd == "EMERGENCY_STOP") {
+        Serial.println("🛑 PARADA DE EMERGENCIA REMOTA");
+        emergenciaTotal();
+      }
+    }
+  } else if (httpCode > 0) {
+    Serial.println("⚠️ Heartbeat error: " + String(httpCode));
+  }
+  // Si falla silenciosamente, continúa con parámetros locales
+  
+  http.end();
 }
