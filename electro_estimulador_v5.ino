@@ -809,7 +809,6 @@ void setup() {
   digitalWrite(PIN_TENS, FISICO_APAGADO);
   pinMode(PIN_TENS, OUTPUT);
   pinMode(PIN_BOOT, INPUT_PULLUP);  // Botón BOOT con pull-up interno
-
   
   // Configurar PWM en GPIO23
   ledcAttach(PIN_TENS, frecuenciaHz, 8);
@@ -847,7 +846,6 @@ void setup() {
     Serial.println("   1. Conecta tu celular a la red 'TENS_Config_WiFi'");
     Serial.println("   2. Abre 192.168.4.1 en el navegador");
     Serial.println("   3. Selecciona tu red WiFi e ingresa la contraseña");
-    
     if (!wifiManager.startConfigPortal("TENS_Config_WiFi")) {
       Serial.println("❌ Tiempo agotado. Reiniciando...");
       delay(1000);
