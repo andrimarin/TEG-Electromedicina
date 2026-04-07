@@ -1,8 +1,8 @@
 // ============================================================
-// ELECTROTERAPIA TENS - CON WiFiManager + Recetas JSON
-// Configuración WiFi desde el celular (sin hardcodear)
-// Pin de salida: GPIO23 (PWM)
-// Controla: INTENSIDAD (0-255), FRECUENCIA y ANCHO DE PULSO
+// ELECTROTERAPIA TENS - CONTROL DIGITAL PURO + Recetas JSON
+// Sin PWM por hardware - Control temporal por micros()
+// Pin GPIO23: HIGH = reposo, LOW = estímulo (lógica inversa)
+// Mapeo dinámico: anchoPulsoMs × (intensidad/255)
 // Recetas con ciclos trabajo/pausa. Al finalizar → 0V garantizado.
 // ============================================================
 
@@ -31,7 +31,7 @@ enum EstadoTerapia {
 EstadoTerapia estadoActual = ESTADO_IDLE;
 
 // ================== PARÁMETROS ==================
-int intensidad = 0;             // 0-255 (amplitud del PWM durante pulso)
+int intensidad = 0;             // 0-255 (multiplicador del ancho de pulso)
 int frecuenciaHz = 50;          // Hz - de la receta
 float anchoPulsoMs = 0.5;       // ms - ancho del pulso de la receta
 bool terapiaActiva = false;     // Flag global de terapia en curso
@@ -56,37 +56,26 @@ bool pulsoEncendido = false;
 
 WebServer server(80);
 
-// ================== CONFIGURACIÓN PWM ==================
-void configurarPWM() {
-  //ledcAttach(PIN_TENS, frecuenciaHz, 8);
-  //ledcWrite(PIN_TENS, 0);
+// ================== CONFIGURACIÓN DIGITAL PURA ==================
+void configurarPin() {
   pinMode(PIN_TENS, OUTPUT);
-  digitalWrite(PIN_TENS, FISICO_APAGADO);
+  digitalWrite(PIN_TENS, FISICO_APAGADO); // HIGH = estado seguro
 }
 
-void actualizarPWM(int valor) {
-  ledcWrite(PIN_TENS, valor);
-}
-
-// ================== APAGADO GARANTIZADO ==================
-// Doble verificación: apaga PWM Y pone el pin en LOW
-
+// ================== APAGADO GARANTIZADO - SOLO DIGITAL ==================
 void apagarElectrodoTotal() {
-  // En lógica inversa, 255 de duty cycle es el estado de menor energía
-  // ledcWrite(PIN_TENS, 255); 
   pulsoEncendido = false;
-  // Forzar estado físico HIGH (MOSFET bloqueado)
-  digitalWrite(PIN_TENS, FISICO_APAGADO); 
-  
+  digitalWrite(PIN_TENS, FISICO_APAGADO); // HIGH = reposo SIEMPRE
   Serial.println("⚡ Estado Seguro: Pin en HIGH (MOSFET bloqueado)"); 
 }
 
 
-// ================== GENERACIÓN DE ONDA (por receta) ==================
+// ================== GENERACIÓN DE ONDA DIGITAL PURA ==================
 // Solo genera pulsos cuando estadoActual == ESTADO_TRABAJANDO
 // Usa frecuenciaHz y anchoPulsoMs de la receta
- void generarOnda() {
-  if (estadoActual != ESTADO_TRABAJANDO) {
+// MAPEO DINÁMICO: anchoEfectivo = anchoPulsoMs × (intensidad/255)
+void generarOnda() {
+  if (estadoActual != ESTADO_TRABAJANDO || intensidad == 0) {
     if (pulsoEncendido) apagarElectrodoTotal();
     return;
   }
@@ -98,26 +87,28 @@ void apagarElectrodoTotal() {
   unsigned long ahora = micros();
   unsigned long periodoUs = 1000000UL / frecuenciaHz;
   
-  // ANCHO DE PULSO DIRECTO - sin modulación por intensidad
-  unsigned long anchoPulsoUs = (unsigned long)(anchoPulsoMs * 1000.0f + 0.5f);
+  // MAPEO DINÁMICO: ancho base × intensidad (0-255)
+  float anchoBaseUs = anchoPulsoMs * 1000.0f;
+  float factor = intensidad / 255.0f; // 0.0 a 1.0
+  unsigned long anchoEfectivoUs = (unsigned long)(anchoBaseUs * factor + 0.5f);
   
-  // Validaciones finales
-  if (anchoPulsoUs < 10) anchoPulsoUs = 10; // Mínimo 10µs
-  if (anchoPulsoUs >= periodoUs) anchoPulsoUs = (periodoUs * 8) / 10; // Máximo 80%
+  // Validaciones de seguridad críticas
+  if (anchoEfectivoUs < 10 && intensidad > 0) anchoEfectivoUs = 10; // Mínimo técnico
+  if (anchoEfectivoUs > (periodoUs / 2)) anchoEfectivoUs = periodoUs / 2; // Máximo 50% (seguridad médica)
   
-  unsigned long tiempoOffUs = periodoUs - anchoPulsoUs;
-  if (tiempoOffUs < 10) tiempoOffUs = 10; // Mínimo OFF
+  unsigned long tiempoReposoUs = periodoUs - anchoEfectivoUs;
+  if (tiempoReposoUs < 10) tiempoReposoUs = 10; // Mínimo reposo
   
   if (pulsoEncendido) {
-    // ESTADO ACTIVO (LOW): El pulso que "baja" 
-    if ((ahora - ultimoPulso) >= anchoPulsoUs) {
-      digitalWrite(PIN_TENS, FISICO_APAGADO); // HIGH = reposo
+    // ESTADO ESTÍMULO (LOW): Pin en bajo durante el pulso
+    if ((ahora - ultimoPulso) >= anchoEfectivoUs) {
+      digitalWrite(PIN_TENS, FISICO_APAGADO); // HIGH = reposo SIEMPRE
       pulsoEncendido = false;
       ultimoPulso = ahora;
     }
   } else {
     // ESTADO REPOSO (HIGH): Esperando siguiente pulso
-    if ((ahora - ultimoPulso) >= tiempoOffUs) {
+    if ((ahora - ultimoPulso) >= tiempoReposoUs) {
       digitalWrite(PIN_TENS, FISICO_ENCENDIDO); // LOW = estímulo
       pulsoEncendido = true;
       ultimoPulso = ahora;
@@ -218,12 +209,13 @@ void finalizarTerapia() {
   estadoActual = ESTADO_FINALIZADO;
   terapiaActiva = false;
   intensidad = 0;
-  apagarElectrodoTotal(); // Esta función ya pone el pin en HIGH
   
-  // Triple seguridad: NUNCA pongas LOW aquí
+  // Apagado triple seguridad - SOLO DIGITAL
+  digitalWrite(PIN_TENS, FISICO_APAGADO); // HIGH
   delay(1);
-  actualizarPWM(255); // 255 es apagado en lógica inversa
-  digitalWrite(PIN_TENS, FISICO_APAGADO); // Debe ser HIGH
+  digitalWrite(PIN_TENS, FISICO_APAGADO); // HIGH (verificación)
+  delay(1);
+  digitalWrite(PIN_TENS, FISICO_APAGADO); // HIGH (triple verificación)
   
   Serial.println("=== RECETA FINALIZADA ===");
   Serial.println("⚡ Electrodo APAGADO - 0V confirmado");
@@ -244,10 +236,10 @@ void emergenciaTotal() {
   intensidad = 0;
   apagarElectrodoTotal();
   
-  // Seguridad extra: Asegurar el estado HIGH
+  // Seguridad extra - SOLO DIGITAL
   delay(1);
-  // actualizarPWM(255); 
-  digitalWrite(PIN_TENS, FISICO_APAGADO); // Corregido: de LOW a HIGH
+  digitalWrite(PIN_TENS, FISICO_APAGADO); // HIGH (verificación)
+  
   Serial.println("!!! PARADA DE EMERGENCIA ACTIVADA !!!"); 
 }
 
@@ -818,18 +810,15 @@ void setup() {
   delay(1000);
   
   Serial.println("\n=================================");
-  Serial.println("⚡ ELECTROTERAPIA TENS - WiFiManager");
+  Serial.println("⚡ ELECTROTERAPIA TENS - Digital Puro");
   Serial.println("=================================");
   
-  // Configurar pines
-  digitalWrite(PIN_TENS, FISICO_APAGADO);
+  // Configurar pines - SOLO DIGITAL
   pinMode(PIN_TENS, OUTPUT);
+  digitalWrite(PIN_TENS, FISICO_APAGADO); // HIGH = estado seguro
   pinMode(PIN_BOOT, INPUT_PULLUP);  // Botón BOOT con pull-up interno
 
   
-  // Configurar PWM en GPIO23
-  // ledcAttach(PIN_TENS, frecuenciaHz, 8);
-  ledcWrite(PIN_TENS, 255);
   // DETECTA SI EL WIFI MANAGER ESTA ACTIVO
   bool forzarConfigWiFi = false;
 
@@ -962,30 +951,33 @@ void checkHeartbeat() {
     DeserializationError error = deserializeJson(doc, http.getString());
     
     if (!error) {
-      // Solo actualizar si los valores son válidos y diferentes
+      // Actualizar ancho de pulso base (receta médica)
       float newPulseWidth = doc["pulse_width_ms"] | -1.0f;
-      int newIntensity = doc["intensity"] | -1;
-      
-      if (newPulseWidth > 0 && newPulseWidth != anchoPulsoMs) {
+      if (newPulseWidth > 0 && newPulseWidth <= 10.0 && newPulseWidth != anchoPulsoMs) {
         anchoPulsoMs = newPulseWidth;
-        Serial.println("📡 Ancho de pulso actualizado: " + String(anchoPulsoMs) + "ms");
+        Serial.println("📡 Ancho de pulso base actualizado: " + String(anchoPulsoMs) + "ms");
       }
       
+      // Actualizar intensidad (multiplicador del usuario/operario)
+      int newIntensity = doc["intensity"] | -1;
       if (newIntensity >= 0 && newIntensity <= 255 && newIntensity != intensidad) {
         intensidad = newIntensity;
-        Serial.println("📡 Intensidad actualizada: " + String(intensidad));
+        Serial.println("📡 Intensidad actualizada: " + String(intensidad) + " (" + String(intensidad * 100 / 255) + "%)");
       }
       
+      // Comandos de emergencia remota
       String cmd = doc["command"] | "NONE";
       if (cmd == "EMERGENCY_STOP") {
         Serial.println("🛑 PARADA DE EMERGENCIA REMOTA");
         emergenciaTotal();
+      } else if (cmd == "START" && estadoActual == ESTADO_IDLE && numCiclos > 0) {
+        Serial.println("📡 INICIO REMOTO");
+        iniciarReceta();
       }
     }
   } else if (httpCode > 0) {
     Serial.println("⚠️ Heartbeat error: " + String(httpCode));
   }
-  // Si falla silenciosamente, continúa con parámetros locales
   
   http.end();
 }
