@@ -86,40 +86,39 @@ void apagarElectrodoTotal() {
 // Solo genera pulsos cuando estadoActual == ESTADO_TRABAJANDO
 // Usa frecuenciaHz y anchoPulsoMs de la receta
  void generarOnda() {
-  if (estadoActual != ESTADO_TRABAJANDO || intensidad == 0) {
+  if (estadoActual != ESTADO_TRABAJANDO) {
     if (pulsoEncendido) apagarElectrodoTotal();
     return;
   }
 
-  // Protección contra división por cero
+  // Validaciones de seguridad
   if (frecuenciaHz < 1) frecuenciaHz = 1;
   if (frecuenciaHz > 150) frecuenciaHz = 150;
-
+  
   unsigned long ahora = micros();
-  unsigned long periodoUs = 1000000UL / frecuenciaHz; 
+  unsigned long periodoUs = 1000000UL / frecuenciaHz;
   
-  // MAPEO DINÁMICO con mejor precisión
-  float anchoAjustadoMs = (anchoPulsoMs * intensidad) / 255.0f;
-  unsigned long anchoPulsoUs = (unsigned long)(anchoAjustadoMs * 1000.0f + 0.5f); // +0.5 para redondeo
+  // ANCHO DE PULSO DIRECTO - sin modulación por intensidad
+  unsigned long anchoPulsoUs = (unsigned long)(anchoPulsoMs * 1000.0f + 0.5f);
   
-  // Validaciones de seguridad
-  if (anchoPulsoUs < 10) anchoPulsoUs = 10;  // Mínimo 10µs
-  if (anchoPulsoUs > (periodoUs * 8) / 10) { // Máximo 80% del periodo
-    anchoPulsoUs = (periodoUs * 8) / 10;
-  }
+  // Validaciones finales
+  if (anchoPulsoUs < 10) anchoPulsoUs = 10; // Mínimo 10µs
+  if (anchoPulsoUs >= periodoUs) anchoPulsoUs = (periodoUs * 8) / 10; // Máximo 80%
   
   unsigned long tiempoOffUs = periodoUs - anchoPulsoUs;
-  if (tiempoOffUs < 10) tiempoOffUs = 10;  // Mínimo tiempo OFF
-
+  if (tiempoOffUs < 10) tiempoOffUs = 10; // Mínimo OFF
+  
   if (pulsoEncendido) {
+    // ESTADO ACTIVO (LOW): El pulso que "baja" 
     if ((ahora - ultimoPulso) >= anchoPulsoUs) {
-      digitalWrite(PIN_TENS, FISICO_APAGADO); 
+      digitalWrite(PIN_TENS, FISICO_APAGADO); // HIGH = reposo
       pulsoEncendido = false;
       ultimoPulso = ahora;
     }
   } else {
+    // ESTADO REPOSO (HIGH): Esperando siguiente pulso
     if ((ahora - ultimoPulso) >= tiempoOffUs) {
-      digitalWrite(PIN_TENS, FISICO_ENCENDIDO); 
+      digitalWrite(PIN_TENS, FISICO_ENCENDIDO); // LOW = estímulo
       pulsoEncendido = true;
       ultimoPulso = ahora;
     }
@@ -829,7 +828,7 @@ void setup() {
 
   
   // Configurar PWM en GPIO23
-  ledcAttach(PIN_TENS, frecuenciaHz, 8);
+  // ledcAttach(PIN_TENS, frecuenciaHz, 8);
   ledcWrite(PIN_TENS, 255);
   // DETECTA SI EL WIFI MANAGER ESTA ACTIVO
   bool forzarConfigWiFi = false;
