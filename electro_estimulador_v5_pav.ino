@@ -85,21 +85,31 @@ void apagarElectrodoTotal() {
 // ================== GENERACIÓN DE ONDA (por receta) ==================
 // Solo genera pulsos cuando estadoActual == ESTADO_TRABAJANDO
 // Usa frecuenciaHz y anchoPulsoMs de la receta
-  void generarOnda() {
+ void generarOnda() {
   if (estadoActual != ESTADO_TRABAJANDO || intensidad == 0) {
     if (pulsoEncendido) apagarElectrodoTotal();
     return;
   }
 
+  // Protección contra división por cero
+  if (frecuenciaHz < 1) frecuenciaHz = 1;
+  if (frecuenciaHz > 150) frecuenciaHz = 150;
+
   unsigned long ahora = micros();
   unsigned long periodoUs = 1000000UL / frecuenciaHz; 
   
-  // MAPEO DINÁMICO: La intensidad controla el ancho del pulso
-  // Si intensidad es 255, usa el ancho máximo de la receta (ej. 0.5ms)
-  // Si intensidad es 127, usa la mitad del tiempo.
-  float anchoAjustadoMs = (anchoPulsoMs * intensidad) / 255.0;
-  unsigned long anchoPulsoUs = (unsigned long)(anchoAjustadoMs * 1000.0);
-  unsigned long tiempoOffUs = periodoUs - anchoPulsoUs; 
+  // MAPEO DINÁMICO con mejor precisión
+  float anchoAjustadoMs = (anchoPulsoMs * intensidad) / 255.0f;
+  unsigned long anchoPulsoUs = (unsigned long)(anchoAjustadoMs * 1000.0f + 0.5f); // +0.5 para redondeo
+  
+  // Validaciones de seguridad
+  if (anchoPulsoUs < 10) anchoPulsoUs = 10;  // Mínimo 10µs
+  if (anchoPulsoUs > (periodoUs * 8) / 10) { // Máximo 80% del periodo
+    anchoPulsoUs = (periodoUs * 8) / 10;
+  }
+  
+  unsigned long tiempoOffUs = periodoUs - anchoPulsoUs;
+  if (tiempoOffUs < 10) tiempoOffUs = 10;  // Mínimo tiempo OFF
 
   if (pulsoEncendido) {
     if ((ahora - ultimoPulso) >= anchoPulsoUs) {
